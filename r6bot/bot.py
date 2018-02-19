@@ -2,7 +2,7 @@ import inspect
 import traceback
 import asyncio
 import shlex
-import discordrw
+import discord
 import aiohttp
 import json
 import logging
@@ -31,7 +31,7 @@ from .creds import BOT_TOKEN, TWITCH_CREDS
 from .utils import clean_string, write_json, load_json, clean_bad_pings, datetime_to_utc_ts, timestamp_to_seconds, strfdelta, _get_variable, snowflake_time
 VERSION = '1.0'
 
-logger = logging.getLogger('discordrw')
+logger = logging.getLogger('discord')
 logger.setLevel(logging.INFO)
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
@@ -44,7 +44,7 @@ class Response(object):
         self.delete_after = delete_after
 
 
-class R6Bot(discordrw.Client):
+class R6Bot(discord.Client):
     def __init__(self):
         super().__init__(max_messages=50000)
         self.prefix = '!'
@@ -118,7 +118,7 @@ class R6Bot(discordrw.Client):
             
             
     async def generate_streaming_embed(self, resp, streamer):
-        em = discordrw.Embed(colour=discordrw.Colour(0x56d696), description=resp["stream"]["channel"]["status"], timestamp=datetime.strptime(resp["stream"]["created_at"], "%Y-%m-%dT%H:%M:%SZ"))
+        em = discord.Embed(colour=discord.Colour(0x56d696), description=resp["stream"]["channel"]["status"], timestamp=datetime.strptime(resp["stream"]["created_at"], "%Y-%m-%dT%H:%M:%SZ"))
         if resp["stream"]["channel"]["logo"]:
             prof_pic = resp["stream"]["channel"]["logo"]
         else:
@@ -128,7 +128,7 @@ class R6Bot(discordrw.Client):
                 data = await r.read()
                 with open("img.png", "wb") as f:
                     f.write(data)
-        file = discordrw.File("/home/bots/r6botrw/img.png", filename="img.png")
+        file = discord.File("/home/bots/r6botrw/img.png", filename="img.png")
         em.set_image(url="attachment://img.png")
         em.set_author(name=streamer, url='https://www.twitch.tv/{}'.format(streamer), icon_url=prof_pic)
         em.set_footer(text="Language: {}".format(resp["stream"]["channel"]["language"].upper()))
@@ -205,7 +205,7 @@ class R6Bot(discordrw.Client):
                                                                  'offline_cooldown': False,
                                                                  'embedded_object': await self.generate_streaming_embed(resp, streamer),
                                                                  'message': None}
-                                self.twitch_is_live[streamer]['message'] = await self.safe_send_message(self.get_channel(target_channel), embed=self.twitch_is_live[streamer]['embedded_object'], file=discordrw.File("/home/bots/r6botrw/img.png", filename="img.png"))
+                                self.twitch_is_live[streamer]['message'] = await self.safe_send_message(self.get_channel(target_channel), embed=self.twitch_is_live[streamer]['embedded_object'], file=discord.File("/home/bots/r6botrw/img.png", filename="img.png"))
                             else:
                                 if datetime.utcnow() - timedelta(minutes=15) > self.twitch_is_live[streamer]['detected_start']:
                                     if self.twitch_debug: print('Recreating new embed for user %s' % streamer)
@@ -215,7 +215,7 @@ class R6Bot(discordrw.Client):
                                                                      'offline_cooldown': False,
                                                                      'embedded_object': await self.generate_streaming_embed(resp, streamer),
                                                                      'message': None}
-                                    self.twitch_is_live[streamer]['message'] = await self.safe_send_message(self.get_channel(target_channel), embed=self.twitch_is_live[streamer]['embedded_object'], file=discordrw.File("/home/bots/r6botrw/img.png", filename="img.png"))
+                                    self.twitch_is_live[streamer]['message'] = await self.safe_send_message(self.get_channel(target_channel), embed=self.twitch_is_live[streamer]['embedded_object'], file=discord.File("/home/bots/r6botrw/img.png", filename="img.png"))
                                 elif datetime.utcnow() - timedelta(minutes=5) > self.twitch_is_live[streamer]['view_count_updated']:
                                     if self.twitch_debug: print('Updating embeds view count for user %s' % streamer)
                                     self.twitch_is_live[streamer]['embedded_object'] = await self.generate_streaming_embed(resp, streamer)
@@ -224,7 +224,7 @@ class R6Bot(discordrw.Client):
                                     
                         elif streamer in self.twitch_is_live and not self.twitch_is_live[streamer]['offline_cooldown']:
                             if self.twitch_debug: print('User %s detected offline, marking as such' % streamer)
-                            self.twitch_is_live[streamer]['embedded_object'].color = discordrw.Colour(0x979c9f)
+                            self.twitch_is_live[streamer]['embedded_object'].color = discord.Colour(0x979c9f)
                             self.twitch_is_live[streamer]['embedded_object'].set_field_at(0, name="Status", value="OFFLINE", inline=True)
                             self.twitch_is_live[streamer]['offline_cooldown'] = True
                             await self.safe_edit_message(self.twitch_is_live[streamer]['message'], embed=self.twitch_is_live[streamer]['embedded_object'])
@@ -254,24 +254,24 @@ class R6Bot(discordrw.Client):
         self.ready_check = True
         print('Connected!\n')
         print('Populating New Ban Roles....')
-        new_roles = [role for role in discordrw.utils.get(self.guilds, id=SERVERS['main']).roles if role.name.startswith('Ban') and role.id not in self.channel_bans]
+        new_roles = [role for role in discord.utils.get(self.guilds, id=SERVERS['main']).roles if role.name.startswith('Ban') and role.id not in self.channel_bans]
         if new_roles:
             print('Found %s new roles!' % len(new_roles))
             for role in new_roles:
-                self.channel_bans[role.id] = [member.id for member in discordrw.utils.get(self.guilds, id=SERVERS['main']).members if role in member.roles]
+                self.channel_bans[role.id] = [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members if role in member.roles]
                 write_json('channel_banned.json', self.channel_bans)
                 
         print('Done!\n\nDeserializing Mutes...')
-        target_server = discordrw.utils.get(self.guilds, id=SERVERS['main'])
-        mutedrole = discordrw.utils.get(target_server.roles, id=ROLES['muted'])
+        target_server = discord.utils.get(self.guilds, id=SERVERS['main'])
+        mutedrole = discord.utils.get(target_server.roles, id=ROLES['muted'])
         temp_dict = dict(self.muted_dict)
         for user_id, timestamp in temp_dict.items():
-            user = discordrw.utils.get(target_server.members, id=user_id)
+            user = discord.utils.get(target_server.members, id=user_id)
             if user:
                 try:
                     if not ROLES['staff'] in [role.id for role in user.roles]: await user.edit(roles = [mutedrole])
                     await user.edit(mute=True)
-                except discordrw.Forbidden:
+                except discord.Forbidden:
                     print('cannot add role to %s, permission error' % user.name)
             if timestamp:
                 datetime_timestamp = datetime.fromtimestamp(timestamp)
@@ -286,7 +286,7 @@ class R6Bot(discordrw.Client):
         print('Done!\n\nPopulating Message Logs...')
         self.messages_log  = self.load_channel_logs()
         # print('Done!\n\nCacheing Avatars...')
-        # for member in discordrw.utils.get(self.guilds, id=SERVERS['main']).members:
+        # for member in discord.utils.get(self.guilds, id=SERVERS['main']).members:
             # if '{}.gif'.format(member.id) not in [files for root, dirs, files in os.walk('avatars', topdown=False)]:
                 # async with aiohttp.ClientSession() as sess:
                     # avatar_url = member.avatar_url
@@ -299,13 +299,13 @@ class R6Bot(discordrw.Client):
                                 # f.write(data)
                         
         print('Done!\n\nAppending Missed Mutes...')
-        muted_coffee_filter = [member for member in discordrw.utils.get(self.guilds, id=SERVERS['main']).members if mutedrole in member.roles and member.id not in self.muted_dict]
+        muted_coffee_filter = [member for member in discord.utils.get(self.guilds, id=SERVERS['main']).members if mutedrole in member.roles and member.id not in self.muted_dict]
         for member in muted_coffee_filter:
             self.muted_dict[member.id] = None
         write_json('muted.json', self.muted_dict)
         print('Done!')
         
-        await self.change_presence(game=discordrw.Game(name='DM to contact staff!'))
+        await self.change_presence(game=discord.Game(name='DM to contact staff!'))
         await self.safe_send_message(self.get_channel(CHANS['staff']), content='I have just been rebooted!')
         
         print('\n~')
@@ -322,10 +322,10 @@ class R6Bot(discordrw.Client):
             if msg and expire_in:
                 asyncio.ensure_future(self._wait_delete_msg(msg, expire_in))
 
-        except discordrw.Forbidden:
+        except discord.Forbidden:
             if not quiet:
                 print("Error: Cannot send message to %s, no permission" % dest.name)
-        except discordrw.NotFound:
+        except discord.NotFound:
             if not quiet:
                 print("Warning: Cannot send message to %s, invalid channel?" % dest.name)
         finally:
@@ -335,10 +335,10 @@ class R6Bot(discordrw.Client):
         try:
             return await message.delete()
 
-        except discordrw.Forbidden:
+        except discord.Forbidden:
             if not quiet:
                 print("Error: Cannot delete message \"%s\", no permission" % message.clean_content)
-        except discordrw.NotFound:
+        except discord.NotFound:
             if not quiet:
                 print("Warning: Cannot delete message \"%s\", message not found" % message.clean_content)
 
@@ -355,7 +355,7 @@ class R6Bot(discordrw.Client):
             if msg and expire_in:
                 asyncio.ensure_future(self._wait_delete_msg(msg, expire_in))
 
-        except discordrw.NotFound:
+        except discord.NotFound:
             if not quiet:
                 print("Warning: Cannot edit message \"%s\", message not found" % message.clean_content)
             if send_if_fail:
@@ -482,7 +482,7 @@ class R6Bot(discordrw.Client):
         Usage: {command_prefix}changegame ["new game name"]
         Changes the "Now Playing..." game on Discord!
         """
-        await self.change_presence(game=discordrw.Game(name=string_game))
+        await self.change_presence(game=discord.Game(name=string_game))
         return Response(':thumbsup:', reply=True)
         
     async def cmd_tag(self, message, author, channel, mentions, leftover_args):
@@ -597,7 +597,7 @@ class R6Bot(discordrw.Client):
         except:
             return
         if str(reac.emoji) == '✅':
-            role = discordrw.utils.get(guild.roles, id=ROLES['staff'])
+            role = discord.utils.get(guild.roles, id=ROLES['staff'])
             await role.edit(mentionable=True)
             mention_msg = await self.safe_send_message(channel, content='<@&{}>'.format(ROLES['staff']))
             await asyncio.sleep(1)
@@ -685,12 +685,12 @@ class R6Bot(discordrw.Client):
         if mentions:
             user = mentions[0]
         else:
-            if discordrw.utils.get(guild.members, name=option):
-                user = discordrw.utils.get(guild.members, name=option)
-            elif discordrw.utils.get(guild.members, id=option):
-                user = discordrw.utils.get(guild.members, id=option)
-            elif discordrw.utils.get(guild.members, nick=option):
-                user = discordrw.utils.get(guild.members, nick=option)
+            if discord.utils.get(guild.members, name=option):
+                user = discord.utils.get(guild.members, name=option)
+            elif discord.utils.get(guild.members, id=option):
+                user = discord.utils.get(guild.members, id=option)
+            elif discord.utils.get(guild.members, nick=option):
+                user = discord.utils.get(guild.members, nick=option)
             else:
                 raise CommandError('Could not find user specified')
         if user.id in self.serious_d_blacklist:
@@ -756,7 +756,7 @@ class R6Bot(discordrw.Client):
         if auth_id not in self.mod_mail_db:
             raise CommandError('ERROR: User ID not found in Mod Mail DB')
         quick_switch_dict = {}
-        quick_switch_dict[auth_id] = {'embed': discordrw.Embed(), 'member_obj': await self.get_user_info(auth_id)}
+        quick_switch_dict[auth_id] = {'embed': discord.Embed(), 'member_obj': await self.get_user_info(auth_id)}
         quick_switch_dict[auth_id]['embed'].set_author(name='{}({})'.format(quick_switch_dict[auth_id]['member_obj'].name, quick_switch_dict[auth_id]['member_obj'].id), icon_url=quick_switch_dict[auth_id]['member_obj'].avatar_url)
         
         current_index = 0
@@ -770,7 +770,7 @@ class R6Bot(discordrw.Client):
                 user = None
                 if msg_dict['modreply'] is not None:
                     try:
-                        user = discordrw.utils.get(guild.members, id=msg_dict['modreply']).name
+                        user = discord.utils.get(guild.members, id=msg_dict['modreply']).name
                     except:
                         user = await self.get_user_info(msg_dict['modreply'])
                         user = user.name
@@ -820,7 +820,7 @@ class R6Bot(discordrw.Client):
             return Response('Everything is answered!')
         quick_switch_dict = {}
         for member_id in unanswered_threads:
-            quick_switch_dict[member_id] = {'embed': discordrw.Embed(), 'member_obj': await self.get_user_info(member_id)}
+            quick_switch_dict[member_id] = {'embed': discord.Embed(), 'member_obj': await self.get_user_info(member_id)}
             quick_switch_dict[member_id]['embed'].set_author(name='{}({})'.format(quick_switch_dict[member_id]['member_obj'].name, quick_switch_dict[member_id]['member_obj'].id), icon_url=quick_switch_dict[member_id]['member_obj'].avatar_url)
             od = collections.OrderedDict(sorted(self.mod_mail_db[member_id]['messages'].items(), reverse=True))
             od = collections.OrderedDict(islice(od.items(), 20))
@@ -895,9 +895,9 @@ class R6Bot(discordrw.Client):
         Fetches the help info for the bot's commands
         """
         auth_id = int(auth_id)
-        member = discordrw.utils.get(guild.members, id=auth_id)
+        member = discord.utils.get(guild.members, id=auth_id)
         if not member:
-            member = discordrw.utils.get(discordrw.utils.get(self.guilds, id=SERVERS['ban']).members, id=auth_id)
+            member = discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['ban']).members, id=auth_id)
         if member:
             if leftover_args[0] == 'anon':
                 msg_to_send = ' '.join(leftover_args[1:])
@@ -941,7 +941,7 @@ class R6Bot(discordrw.Client):
                 leftover_args.pop(0)
         else:
             if len(leftover_args) == 2:
-                user = discordrw.utils.get(guild.members, id=int(leftover_args.pop(0)))
+                user = discord.utils.get(guild.members, id=int(leftover_args.pop(0)))
                 if user:
                     mentions = [user]
             if not mentions:
@@ -953,7 +953,7 @@ class R6Bot(discordrw.Client):
                 await user.edit(mute=False)
                 del self.muted_dict[user.id]
                 write_json('muted.json', self.muted_dict)
-            except discordrw.Forbidden:
+            except discord.Forbidden:
                 raise CommandError('Not enough permissions to mute user : {}'.format(user.name))
             except:
                 traceback.print_exc()
@@ -974,7 +974,7 @@ class R6Bot(discordrw.Client):
                 leftover_args.pop(0)
         else:
             if leftover_args:
-                user = discordrw.utils.get(guild.members, id=int(leftover_args.pop(0)))
+                user = discord.utils.get(guild.members, id=int(leftover_args.pop(0)))
                 if user:
                     mentions = [user]
                 else:
@@ -984,14 +984,14 @@ class R6Bot(discordrw.Client):
                 
         seconds_to_mute = timestamp_to_seconds(''.join(leftover_args))
         
-        mutedrole = discordrw.utils.get(guild.roles, id=ROLES['muted'])
+        mutedrole = discord.utils.get(guild.roles, id=ROLES['muted'])
         if not mutedrole:
             raise CommandError('No Muted role created')
         for user in mentions:
             try:
                 if not ROLES['staff'] in [role.id for role in user.roles]: await user.edit(roles = [mutedrole])
                 await user.edit(mute=True)
-            except discordrw.Forbidden:
+            except discord.Forbidden:
                 raise CommandError('Not enough permissions to mute user : {}'.format(user.name))
             except:
                 traceback.print_exc()
@@ -1039,10 +1039,10 @@ class R6Bot(discordrw.Client):
                 if seconds_to_slow == 0:
                     await self.safe_send_message(self.get_channel(message.channel.id), content='No time detected, please use a valid time!')
                     return
-                slowed_channel = discordrw.utils.get(guild.channels, id=channel_mentions.id)
+                slowed_channel = discord.utils.get(guild.channels, id=channel_mentions.id)
                 channel_muted_role = await guild.create_role(name=slowed_channel.name + 'SLOWROLE',
-                                                            permissions=discordrw.Permissions(permissions=66560))
-                overwrite = discordrw.PermissionOverwrite()
+                                                            permissions=discord.Permissions(permissions=66560))
+                overwrite = discord.PermissionOverwrite()
                 overwrite.send_messages = False
                 await slowed_channel.edit_channel_permissions(channel_muted_role, overwrite=overwrite)
                 await self.safe_send_message(self.get_channel(channel_mentions.id), content='This channel is now in slow mode with a delay of **%s seconds**!' % seconds_to_slow)
@@ -1064,7 +1064,7 @@ class R6Bot(discordrw.Client):
                 leftover_args.pop(0)
         else:
             if len(leftover_args) == 1:
-                user = discordrw.utils.get(guild.members, id=int(leftover_args.pop(0)))
+                user = discord.utils.get(guild.members, id=int(leftover_args.pop(0)))
                 if user:
                     mentions = [user]
             if not mentions:
@@ -1077,7 +1077,7 @@ class R6Bot(discordrw.Client):
                 await self.safe_send_message(user, content=MSGS['banmsg'])
                 await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Banned user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
                 await guild.ban(user)
-            except discordrw.Forbidden:
+            except discord.Forbidden:
                 raise CommandError('Not enough permissions to ban user : {}'.format(user.name))
             except:
                 traceback.print_exc()
@@ -1088,25 +1088,25 @@ class R6Bot(discordrw.Client):
     async def log_action(self, user, action, *, message=None, after = None):
         file = None
         if action == 'server_join':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Account **{} old.**'.format(strfdelta(datetime.utcnow() - user.created_at)),colour=discordrw.Colour(0x32CD32), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Account **{} old.**'.format(strfdelta(datetime.utcnow() - user.created_at)),colour=discord.Colour(0x32CD32), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Joined Server", icon_url="https://i.imgur.com/cjJm2Yb.png")
             em.set_thumbnail(url=user.avatar_url)
             if datetime.utcnow() - timedelta(hours=24) < user.created_at:
                 em.set_footer(text="WARNING: User account is < 24 hours old (FRESH)", icon_url="https://i.imgur.com/RsOSopy.png")
         elif action == 'server_leave':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Left after **{}**.'.format(strfdelta(datetime.utcnow() - user.joined_at)),colour=discordrw.Colour(0xCD5C5C), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Left after **{}**.'.format(strfdelta(datetime.utcnow() - user.joined_at)),colour=discord.Colour(0xCD5C5C), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Left Server", icon_url="https://i.imgur.com/gturKf2.png")
             em.set_thumbnail(url=user.avatar_url)
         elif action == 'server_ban':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discordrw.Colour(0xFF0000), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0xFF0000), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Banned from Server", icon_url="https://i.imgur.com/gqseDvC.png")
             em.set_thumbnail(url=user.avatar_url)
         elif action == 'server_unban':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discordrw.Colour(0xFFFF99), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0xFFFF99), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Unbanned from Server", icon_url="https://i.imgur.com/hPTzmRa.png")
             em.set_thumbnail(url=user.avatar_url)
         elif action == 'message_edit':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), colour=discordrw.Colour(0xFFFF00), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), colour=discord.Colour(0xFFFF00), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Edited Message", icon_url="https://i.imgur.com/NLpSnr2.png")
             em.set_thumbnail(url=user.avatar_url)
             em.add_field(name='BEFORE: ', value=message.content, inline=False)
@@ -1115,7 +1115,7 @@ class R6Bot(discordrw.Client):
 
             em.add_field(name='\nAFTER: ', value=after.content, inline=False)
         elif action == 'message_delete':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discordrw.Colour(0x305ebf), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0x305ebf), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User's Message Deleted", icon_url="https://i.imgur.com/MrrRQTo.png")
             em.set_thumbnail(url=user.avatar_url)
             if not message:
@@ -1124,7 +1124,7 @@ class R6Bot(discordrw.Client):
             if after:
                 em.add_field(name='ATTACHMENTS: ', value=', '.join([attachment.url for attachment in after]), inline=False)
         # elif action == 'avatar_change':
-            # em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discordrw.Colour(0xA330BF), timestamp=datetime.utcnow())
+            # em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0xA330BF), timestamp=datetime.utcnow())
             # em.set_author(name="𝅳𝅳𝅳User Changed Avatar", icon_url="https://i.imgur.com/C21wipj.png")
             # ffmpeg_success = True
             
@@ -1149,7 +1149,7 @@ class R6Bot(discordrw.Client):
                     # ffmpeg_success = False
                     
             # if ffmpeg_success:
-                # for member in discordrw.utils.get(self.guilds, id=SERVERS['main']).members:
+                # for member in discord.utils.get(self.guilds, id=SERVERS['main']).members:
                     # async with aiohttp.ClientSession() as sess:
                         # avatar_url = member.avatar_url
                         # if '.png' in avatar_url:
@@ -1160,26 +1160,26 @@ class R6Bot(discordrw.Client):
                                 # with open("avatars/{}.gif".format(member.id), "wb") as f:
                                     # f.write(data)
 
-                # file = discordrw.File("/home/bots/r6botrw/output.gif", filename="output.gif")
+                # file = discord.File("/home/bots/r6botrw/output.gif", filename="output.gif")
                 # em.set_image(url="attachment://output.gif")
         elif action == 'avatar_change':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discordrw.Colour(0xA330BF), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0xA330BF), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Changed Avatar", icon_url="https://i.imgur.com/C21wipj.png")
             em.set_image(url=after.avatar_url_as(size=128))
         elif action == 'name_change':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discordrw.Colour(0xA330BF), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0xA330BF), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Changed Name", icon_url="https://i.imgur.com/C21wipj.png")
             em.set_thumbnail(url=user.avatar_url)
             em.add_field(name='BEFORE: ', value=user.name, inline=False)
             em.add_field(name='\nAFTER: ', value=after.name, inline=False)
         elif action == 'nickname_change':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discordrw.Colour(0x6130BF), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0x6130BF), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Changed Nickname", icon_url="https://i.imgur.com/C21wipj.png")
             em.set_thumbnail(url=user.avatar_url)
             em.add_field(name='BEFORE: ', value=user.nick, inline=False)
             em.add_field(name='\nAFTER: ', value=after.nick, inline=False)
         elif action == 'important_role_change':
-            em = discordrw.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discordrw.Colour(0xC69FBA), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0xC69FBA), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Changed Important Roles", icon_url="https://i.imgur.com/Ubp44ao.png")
             em.set_thumbnail(url=user.avatar_url)
 
@@ -1195,42 +1195,42 @@ class R6Bot(discordrw.Client):
         if message_id in ROLE_REACT_MSGS:
             member = self.get_guild(SERVERS['main']).get_member(user_id)
             if emoji.id == REACTS['pc']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['pc'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['pc'])
                 if member_roles:
                     await member.remove_roles(member_roles)
             if emoji.id  ==  REACTS['xbox']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['xbox'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['xbox'])
                 if member_roles:
                     await member.remove_roles(member_roles)
             if emoji.id  ==  REACTS['ps4']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['ps4'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['ps4'])
                 if member_roles:
                     await member.remove_roles(member_roles)
             if emoji.id  ==  REACTS['r6ping']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['r6news'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['r6news'])
                 if member_roles:
                     await member.remove_roles(member_roles)
             if emoji.id  ==  REACTS['invitationals']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['invitationals'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['invitationals'])
                 if member_roles:
                     await member.remove_roles(member_roles)
             if emoji.id  ==  REACTS['serverping']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['servernews'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['servernews'])
                 if member_roles:
                     await member.remove_roles(member_roles)
 
     async def on_typing(self, channel, user, when):
         if channel.id in [CHANS['gamenews'], CHANS['servernews']]:
             if channel.id == CHANS['gamenews']:
-                role = discordrw.utils.get(channel.guild.roles, id=ROLES['r6news'])
+                role = discord.utils.get(channel.guild.roles, id=ROLES['r6news'])
                 self.role_ping_toggle['game'] = role
             if channel.id == CHANS['servernews']:
-                role = discordrw.utils.get(channel.guild.roles, id=ROLES['serverping'])
+                role = discord.utils.get(channel.guild.roles, id=ROLES['serverping'])
                 self.role_ping_toggle['server'] = role
             await role.edit(mentionable=True)
     
     async def on_raw_message_delete(self, message_id, channel_id):
-        message = discordrw.utils.get(self._connection._messages, id=message_id)
+        message = discord.utils.get(self._connection._messages, id=message_id)
         if message:
             await self.log_action(message=message.content, after=message.attachments, user=message.author, action='message_delete')
         else:
@@ -1247,27 +1247,27 @@ class R6Bot(discordrw.Client):
         if message_id in ROLE_REACT_MSGS:
             member = self.get_guild(SERVERS['main']).get_member(user_id)
             if emoji.id == REACTS['pc']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['pc'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['pc'])
                 if member_roles:
                     await member.add_roles(member_roles)
             if emoji.id  ==  REACTS['xbox']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['xbox'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['xbox'])
                 if member_roles:
                     await member.add_roles(member_roles)
             if emoji.id  ==  REACTS['ps4']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['ps4'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['ps4'])
                 if member_roles:
                     await member.add_roles(member_roles)
             if emoji.id  ==  REACTS['r6ping']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['r6news'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['r6news'])
                 if member_roles:
                     await member.add_roles(member_roles)
             if emoji.id  ==  REACTS['invitationals']:
-                member_roles = discordrw.utils.get(member.guild.roles, id=ROLES['invitationals'])
+                member_roles = discord.utils.get(member.guild.roles, id=ROLES['invitationals'])
                 if member_roles:
                     await member.add_roles(member_roles)
             if emoji.id  ==  REACTS['serverping']:
-                member_roles =  discordrw.utils.get(member.guild.roles, id=ROLES['servernews'])
+                member_roles =  discord.utils.get(member.guild.roles, id=ROLES['servernews'])
                 if member_roles:
                     await member.add_roles(member_roles)
 
@@ -1276,8 +1276,8 @@ class R6Bot(discordrw.Client):
         if member.id == self.user.id:
             return
         if reaction.message.channel.id in [CHANS['drama']]:
-            user = discordrw.utils.get(reaction.message.guild.members, id=self.watched_messages[reaction.message.id]['author_id'])
-            mutedrole = discordrw.utils.get(reaction.message.guild.roles, id=ROLES['muted'])
+            user = discord.utils.get(reaction.message.guild.members, id=self.watched_messages[reaction.message.id]['author_id'])
+            mutedrole = discord.utils.get(reaction.message.guild.roles, id=ROLES['muted'])
             if reaction.emoji.id == REACTS['delete']:
                 await self.safe_delete_message(await self.get_channel(self.watched_messages[reaction.message.id]['channel_id']).get_message(self.watched_messages[reaction.message.id]['message_id']))
             if reaction.emoji.id == REACTS['mute']:
@@ -1331,11 +1331,11 @@ class R6Bot(discordrw.Client):
         if member.guild.id == SERVERS['ban']: return
         for role_id in self.channel_bans:
             if member.id in self.channel_bans[role_id]:
-                member_roles = [discordrw.utils.get(member.guild.roles, id=role_id)] + member.roles
+                member_roles = [discord.utils.get(member.guild.roles, id=role_id)] + member.roles
                 if member_roles:
                     if not ROLES['staff'] in [role.id for role in member.roles]: await member.edit(roles = member_roles)
         if member.id in self.muted_dict:
-            member_roles = [discordrw.utils.get(member.guild.roles, id=ROLES['muted'])]
+            member_roles = [discord.utils.get(member.guild.roles, id=ROLES['muted'])]
             if member_roles:
                 if not ROLES['staff'] in [role.id for role in member.roles]: await member.edit(roles = member_roles)
         else:   
@@ -1365,11 +1365,11 @@ class R6Bot(discordrw.Client):
     async def on_member_update(self, before, after):
         if before.guild.id == SERVERS['ban']: return
         
-        new_roles = [role for role in discordrw.utils.get(self.guilds, id=SERVERS['main']).roles if role.name.startswith('Ban') and role.id not in self.channel_bans]
+        new_roles = [role for role in discord.utils.get(self.guilds, id=SERVERS['main']).roles if role.name.startswith('Ban') and role.id not in self.channel_bans]
         if new_roles:
             print('Found %s new roles!' % len(new_roles))
             for role in new_roles:
-                self.channel_bans[role.id] = [member.id for member in discordrw.utils.get(self.guilds, id=SERVERS['main']).members if role in member.roles]
+                self.channel_bans[role.id] = [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members if role in member.roles]
                 write_json('channel_banned.json', self.channel_bans)
         if before.nick != after.nick:
             await self.log_action(user=before, after=after, action='nickname_change')
@@ -1440,8 +1440,8 @@ class R6Bot(discordrw.Client):
                     self.voice_changes[member.id] = {'last_change': datetime.utcnow(), 'changes': 1}
             optional_content = ''
             staff_role = False
-            role = discordrw.utils.get(member.guild.roles, id=ROLES['staff'])
-            vc_muted_role = discordrw.utils.get(member.guild.roles, id=ROLES['vcmuted'])
+            role = discord.utils.get(member.guild.roles, id=ROLES['staff'])
+            vc_muted_role = discord.utils.get(member.guild.roles, id=ROLES['vcmuted'])
             if self.voice_changes[member.id]['changes'] < 10:
                 optional_content = ':small_blue_diamond:'
             elif self.voice_changes[member.id]['changes'] < 20:
@@ -1489,9 +1489,9 @@ class R6Bot(discordrw.Client):
             self.divider_content = '__                                                                                                          __\n\n'
         else:
             self.divider_content = ''
-        if isinstance(message.channel, discordrw.abc.PrivateChannel):
+        if isinstance(message.channel, discord.abc.PrivateChannel):
             print('pm')
-            if message.author.id in [member.id for member in discordrw.utils.get(self.guilds, id=SERVERS['main']).members] and len(discordrw.utils.get(discordrw.utils.get(self.guilds, id=SERVERS['main']).members, id=message.author.id).roles) < 2 and message.author.id not in self.anti_stupid_modmail_list:
+            if message.author.id in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members] and len(discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['main']).members, id=message.author.id).roles) < 2 and message.author.id not in self.anti_stupid_modmail_list:
                 await self.safe_send_message(message.author, content='I noticed you\'re attempting to send the staff a mod mail but have no roles, if this is your issue __**PLEASE**__ make sure to review the message you recieved when you joined __along__ with reading over <#>! If this didn\'t help, please resend your original message!')
                 await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+'→ I sent a message to {}({}) to remind them to read the welcome DM as they attempted to DM me without any roles'.format(message.author.mention, message.author.id))
 
@@ -1514,7 +1514,7 @@ class R6Bot(discordrw.Client):
             else:
                 msg_attachments = ''
                 
-            if message.author.id in [member.id for member in discordrw.utils.get(self.guilds, id=SERVERS['ban']).members] and message.author.id not in [member.id for member in discordrw.utils.get(self.guilds, id=SERVERS['main']).members]:
+            if message.author.id in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['ban']).members] and message.author.id not in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members]:
                 msg_alert = '\n**__WARNING: USER IN BANNED SERVER__**'
             elif message.author.id in self.serious_d_blacklist:
                 msg_alert = '\n**__WARNING: USER IN SERIOUS DISCUSSION BLACKLIST__**'
@@ -1596,7 +1596,7 @@ class R6Bot(discordrw.Client):
         # I don't feel like fixing all these IDs, they're all the staff channels just pretend I actually did the work pls.
         if not message.author.bot and message.channel.id not in [269519917693272074, 290274342904922112, 282076089927598081, 282076117651947520, 269566972977610753, 282076329829072897, 269567077805719552, 282076628153139200, 282076615784136705, 282076800698548224, 282076856201510914, 282076300838043648, 290428366312701962, 290428522080763904, 290428554968301569, 290428408465195008, 290428617773678592, 290428645883772928]:
             if re.search(REGEX['uplay'], message.content, re.IGNORECASE):
-                em = discordrw.Embed(description='**Noteworthy mention found in %s:**' % message.channel.mention, colour=discordrw.Colour(0x9d9bf4), timestamp=datetime.utcnow())
+                em = discord.Embed(description='**Noteworthy mention found in %s:**' % message.channel.mention, colour=discord.Colour(0x9d9bf4), timestamp=datetime.utcnow())
                 em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/TVlATNp.png")
                 async for msg in message.channel.history(limit=4, before=message, reverse=True):
                     em.add_field(name='%s#%s'% (msg.author.name, msg.author.discriminator), value=msg.content, inline=False)
@@ -1615,7 +1615,7 @@ class R6Bot(discordrw.Client):
                         if msg_dict['message_id'] == message.id:
                             await self.safe_delete_message(await self.get_channel(365448564261912576).get_message(msg_id))
             if drama_matches:
-                em = discordrw.Embed(description='**Potential Drama found in %s:**' % message.channel.mention, colour=discordrw.Colour(0xffff00), timestamp=datetime.utcnow())
+                em = discord.Embed(description='**Potential Drama found in %s:**' % message.channel.mention, colour=discord.Colour(0xffff00), timestamp=datetime.utcnow())
                 em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/TVlATNp.png")
                 async for msg in message.channel.history(limit=4, before=message, reverse=True):
                     em.add_field(name='%s#%s'% (msg.author.name, msg.author.discriminator), value=msg.content, inline=False)
@@ -1623,7 +1623,7 @@ class R6Bot(discordrw.Client):
                 em.add_field(name='%s#%s'% (message.author.name, message.author.discriminator), value=msg_value, inline=False)
                 sent_msg = await self.safe_send_message(self.get_channel(CHANS['drama']), embed=em)
             if dox_matches:
-                em = discordrw.Embed(description='**Potential DOXXING found in %s:**' % message.channel.mention, colour=discordrw.Colour(0xff0000), timestamp=datetime.utcnow())
+                em = discord.Embed(description='**Potential DOXXING found in %s:**' % message.channel.mention, colour=discord.Colour(0xff0000), timestamp=datetime.utcnow())
                 em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/ozWtGXL.png")
                 async for msg in message.channel.history(limit=4, before=message, reverse=True):
                     em.add_field(name='%s#%s'% (msg.author.name, msg.author.discriminator), value=msg.content, inline=False)
@@ -1687,9 +1687,9 @@ class R6Bot(discordrw.Client):
             if class_name.startswith('['):
                 class_name = class_name.replace('[', '').replace(']', '')
             if class_name.lower() in ROLE_ALIASES:
-                role = discordrw.utils.get(message.guild.roles, id=ROLE_ALIASES[class_name.lower()])
+                role = discord.utils.get(message.guild.roles, id=ROLE_ALIASES[class_name.lower()])
             else:
-                role = discordrw.utils.get(message.guild.roles, name=class_name.lower())
+                role = discord.utils.get(message.guild.roles, name=class_name.lower())
             if  role and message.channel.id  in [CHANS['genbotspam'], CHANS['registration']]:
                 author_roles = message.author.roles
                 mod_check = [role for role in author_roles if role.id not in UNPROTECTED_ROLES]
