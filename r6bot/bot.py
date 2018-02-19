@@ -12,16 +12,16 @@ import os
 import collections
 import random
 import copy
-import ffmpeg
+# import ffmpeg
 import subprocess
+import textwrap
 import concurrent.futures
 
 from TwitterAPI import TwitterAPI
-
+from contextlib import redirect_stdout
 from functools import wraps
 from io import BytesIO, StringIO
 from datetime import datetime, timedelta
-from textwrap import dedent
 from itertools import islice
 
 
@@ -445,10 +445,9 @@ class R6Bot(discord.Client):
 
         env.update(globals())
 
-        body = self.cleanup_code(code)
         stdout = StringIO()
 
-        to_compile = 'async def func():\n{}'.format(textwrap.indent(body, "  "))
+        to_compile = 'async def func():\n{}'.format(textwrap.indent(code, "  "))
 
         try:
             exec(to_compile, env)
