@@ -1225,9 +1225,11 @@ class R6Bot(discord.Client):
                 role = discord.utils.get(channel.guild.roles, id=ROLES['r6news'])
                 self.role_ping_toggle['game'] = role
             if channel.id == CHANS['servernews']:
-                role = discord.utils.get(channel.guild.roles, id=ROLES['serverping'])
+                role = discord.utils.get(channel.guild.roles, id=ROLES['servernews'])
                 self.role_ping_toggle['server'] = role
             await role.edit(mentionable=True)
+            await asyncio.sleep(30)
+            await role.edit(mentionable=False)
     
     async def on_raw_message_delete(self, message_id, channel_id):
         message = discord.utils.get(self._connection._messages, id=message_id)
