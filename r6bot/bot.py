@@ -1,41 +1,40 @@
-import inspect
-import traceback
-import asyncio
-import shlex
-import discord
-import aiohttp
-import json
-import logging
-import sys
 import re
 import os
-import collections
+import sys
+import json
+import shlex
 import random
-import copy
+import inspect
+import asyncio
+import discord
+import aiohttp
+import logging
+import argparse
 # import ffmpeg
-import subprocess
 import textwrap
-import concurrent.futures
+import traceback
+import concurrent
+import subprocess
+import collections
 
-from TwitterAPI import TwitterAPI
-from contextlib import redirect_stdout
 from functools import wraps
-from io import BytesIO, StringIO
-from datetime import datetime, timedelta
 from itertools import islice
-
+from io import BytesIO, StringIO
+from contextlib import redirect_stdout
+from datetime import datetime, timedelta
+from timeit import default_timer as timer
 
 from .constants import *
 from .exceptions import CommandError
-from .creds import BOT_TOKEN, TWITCH_CREDS
-from .utils import clean_string, write_json, load_json, clean_bad_pings, datetime_to_utc_ts, timestamp_to_seconds, strfdelta, _get_variable, snowflake_time
-VERSION = '1.0'
+from discord.http import HTTPClient, Route
+from .creds import BOT_TOKEN, TWITCH_CREDS, USER_TOKEN
+from .utils import clean_string, write_json, load_json, clean_bad_pings, datetime_to_utc_ts, timestamp_to_seconds, strfdelta, _get_variable, snowflake_time, MemberConverter, UserConverter
 
-logger = logging.getLogger('discord')
-logger.setLevel(logging.INFO)
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
-handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
-logger.addHandler(handler)
+# logger = logging.getLogger('discord')
+# logger.setLevel(logging.INFO)
+# handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+# handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+# logger.addHandler(handler)
 
 class Response(object):
     def __init__(self, content, reply=False, delete_after=0):
@@ -43,50 +42,68 @@ class Response(object):
         self.reply = reply
         self.delete_after = delete_after
 
+class Arguments(argparse.ArgumentParser):
+    def error(self, message):
+        raise RuntimeError(message)
 
 class R6Bot(discord.Client):
     def __init__(self):
         super().__init__(max_messages=50000)
+        # Auth Related 
         self.prefix = '!'
         self.token = BOT_TOKEN
+        self.user_token = USER_TOKEN
+        self.twitch_client_id = TWITCH_CREDS
+        
+        # Local JSON Storage
+        self.messages_log = {}
         self.tags = load_json('tags.json')
-        self.ban_list = {}
-        self.role_ping_toggle = {'server': None,
-                                 'game': None}
         self.tagblacklist = load_json('tagbl.json')
+        self.serious_d_blacklist = load_json('sd_bl.json')
+        self.guild_whitelist = load_json('server_whitelist.json')
         self.twitch_watch_list = load_json('twitchwatchlist.json')
         self.muted_dict = {int(key): value for key, value in load_json('muted.json').items()}
         self.mod_mail_db = {int(key): value for key, value in load_json('modmaildb.json').items()}
         self.channel_bans = {int(key): value for key, value in load_json('channel_banned.json').items()}
-        self.messages_log = {}
+        
+        # Instance Storage (nothing saved between bot
+        self.ban_list = {}
         self.voice_changes = {}
         self.twitch_is_live = {}
+        self.slow_mode_dict = {}
+        self.watched_messages = {}
         self.anti_stupid_modmail_list = []
-        self.guild_whitelist = load_json('server_whitelist.json')
-        self.serious_d_blacklist = load_json('sd_bl.json')
-        self.twitch_client_id = TWITCH_CREDS
+        
+        # Variables used as storage of information between commands
+        self._last_result = None
+        self.divider_content = ''
+        self.last_modmail_msg = None
+        self.last_modmail_poster = None
+        self.role_ping_toggle = {'server': None,
+                                 'game': None}
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        
+        # Used to make RESTful calls using the User Token.
+        self.user_http = HTTPClient(None, proxy=None, proxy_auth=None, loop=asyncio.get_event_loop())
+        
+        # Debug Garbage / work arounds for bugs I saw.
         self.twitch_debug = True
         self.ready_check = False
-        self.watched_messages = {}
-        self._last_result = None
         self.use_reactions = True
-        self.last_modmail_post = None
-        self.divider_content = ''
-        self.reactions_bugged_mode = True
-        self.last_modmail_msg = None
-        self.slow_mode_dict = {}
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        
+        # I separated these out from Constants because I wanted to ensure they could be easily found and changed.
         self.intro_msg = "Welcome to the official Rainbow6 Discord server, make sure to read <#{rules}>! You will need a role in order to chat and join voice channels. To obtain a role *(take note of the exclamation mark prefix)*:```!pc\n!xbox\n!ps4``` If you happen to run a Youtube or Twitch  channel w/ over 15k followers or work at Ubisoft, dm me (the bot) about it and the admins will get you set up with a fancy role!".format(rules=CHANS['rules'])
         self.dm_msg = "Hello and welcome to the official Rainbow6 Discord!\nPlease take a moment to review the rules in <#{rules}> and don't forget to assign yourself a role in <#{roleswap}> as you cannot use the text / voice channels until you do, if you have any further questions, simply message this bot back to send a mod mail to the server staff!".format(rules=CHANS['rules'], roleswap=CHANS['roleswap'])
+        
         print('past init')
 
     # noinspection PyMethodOverriding
     def run(self):
         loop = asyncio.get_event_loop()
         try:
-            loop.create_task(self.check_twitch_streams())
             loop.create_task(self.mod_mail_reminders())
             loop.create_task(self.backup_messages_log())
+            loop.create_task(self.check_twitch_streams())
             loop.run_until_complete(self.start(self.token))
             loop.run_until_complete(self.connect())
         except Exception:
@@ -243,12 +260,46 @@ class R6Bot(discord.Client):
                     channel_logs[int(file[:-5])] = {int(key): value for key, value in load_json(fileroute).items()}
                 except:
                     pass
+        final_dict = {}
         for chan_id, value in channel_logs.items():
-            for message_id, value in value.items():
-                if datetime.utcnow() - timedelta(days=7) > snowflake_time(message_id):
-                    del channel_logs[chan_id][message_id]
-        return channel_logs
-                    
+            for message_id, fields in value.items():
+                if datetime.utcnow() - timedelta(days=7) < snowflake_time(message_id):
+                    final_dict[chan_id] = {message_id: fields}
+        return final_dict
+        
+    async def do_search(self, guild_id, **kwargs):
+        search_args = {}
+        search_args['author_id'] = kwargs.pop('author_id', None)
+        search_args['mentions']  = kwargs.pop('mentions', None)
+        search_args['has']  = kwargs.pop('has', None)
+        search_args['max_id']  = kwargs.pop('max_id', None)
+        search_args['min_id']  = kwargs.pop('min_id', None)
+        search_args['channel_id']  = kwargs.pop('channel_id', None)
+        search_args['content']  = kwargs.pop('content', None)
+        string_query = ''
+        for param, value in search_args.items():
+            if value:
+                string_query = string_query + f'&{param}={value}' if string_query else f'?{param}={value}'
+        print(string_query)
+        return await self.user_http.request(Route('GET', f'/guilds/{guild_id}/messages/search{string_query}'))
+        
+        
+    async def get_profile(self, user_id):
+        state = self._connection
+        data = await self.user_http.get_user_profile(user_id)
+
+        def transform(d):
+            return state._get_guild(int(d['id']))
+
+        since = data.get('premium_since')
+        mutual_guilds = list(filter(None, map(transform, data.get('mutual_guilds', []))))
+        user = data['user']
+        return discord.Profile(flags=user.get('flags', 0),
+                               premium_since=discord.utils.parse_time(since),
+                               mutual_guilds=mutual_guilds,
+                               user=discord.User(data=user, state=state),
+                               connected_accounts=data['connected_accounts'])
+                       
     async def on_ready(self):
         await asyncio.sleep(10)
         self.ready_check = True
@@ -259,8 +310,9 @@ class R6Bot(discord.Client):
             print('Found %s new roles!' % len(new_roles))
             for role in new_roles:
                 self.channel_bans[role.id] = [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members if role in member.roles]
-                write_json('channel_banned.json', self.channel_bans)
-                
+                write_json('channel_banned.json', self.channel_bans)     
+        print('Done!\n\nFinalizing User Login...')
+        await self.user_http.static_login(self.user_token, bot=False)
         print('Done!\n\nDeserializing Mutes...')
         target_server = discord.utils.get(self.guilds, id=SERVERS['main'])
         mutedrole = discord.utils.get(target_server.roles, id=ROLES['muted'])
@@ -297,7 +349,6 @@ class R6Bot(discord.Client):
                             # data = await r.read()
                             # with open("avatars/{}.gif".format(member.id), "wb") as f:
                                 # f.write(data)
-                        
         print('Done!\n\nAppending Missed Mutes...')
         muted_coffee_filter = [member for member in discord.utils.get(self.guilds, id=SERVERS['main']).members if mutedrole in member.roles and member.id not in self.muted_dict]
         for member in muted_coffee_filter:
@@ -305,7 +356,7 @@ class R6Bot(discord.Client):
         write_json('muted.json', self.muted_dict)
         print('Done!')
         
-        await self.change_presence(game=discord.Game(name='DM to contact staff!'))
+        await self.change_presence(activity=discord.Game(name='DM to contact staff!'))
         await self.safe_send_message(self.get_channel(CHANS['staff']), content='I have just been rebooted!')
         
         print('\n~')
@@ -317,8 +368,11 @@ class R6Bot(discord.Client):
     async def safe_send_message(self, dest, *, content=None, tts=False, embed=None, file=None, files=None, expire_in=None, nonce=None, quiet=None):
         msg = None
         try:
+            time_before = timer()
             msg = await dest.send(content=content, tts=tts, embed=embed, file=file, files=files)
-
+            time_after = timer()
+            # if embed:
+                # print(f'Embed send time: "{time_after - time_before}"')
             if msg and expire_in:
                 asyncio.ensure_future(self._wait_delete_msg(msg, expire_in))
 
@@ -785,20 +839,23 @@ class R6Bot(discord.Client):
             
             if current_index != 0:
                 await current_msg.add_reaction('⬅')
+            await current_msg.add_reaction('ℹ')
             if (current_index+1) != len(quick_switch_dict):
                 await current_msg.add_reaction('➡')
                 
             def check(reaction, user):
                 e = str(reaction.emoji)
                 if user != self.user and reaction.message.id == current_msg.id:
-                    return e.startswith(('⬅', '➡'))
+                    return e.startswith(('⬅', '➡', 'ℹ'))
                 else:
                     return False
             try:
                 reac, user = await self.wait_for('reaction_add', check=check, timeout=300)
             except:
                 return
-            if str(reac.emoji) == '➡' and current_index != len(quick_switch_dict):
+            if str(reac.emoji) == 'ℹ':
+                await self.safe_send_message(current_msg.channel, content=loop_dict[auth_id]['member_obj'].id)
+            elif str(reac.emoji) == '➡' and current_index != len(quick_switch_dict):
                 current_index+=1
                 await current_msg.remove_reaction(reac.emoji, user)
             elif str(reac.emoji) == '⬅' and current_index != 0:
@@ -830,8 +887,8 @@ class R6Bot(discord.Client):
                     user = (await self.get_user_info(msg_dict['modreply'])).name
                 else:
                     user = quick_switch_dict[member_id]['member_obj'].name
-                if len(msg_dict['content']) > 1020:
-                    msg_dict['content'] = msg_dict['content'][:1020] + '...'
+                if len(str(msg_dict['content'])) > 1020:
+                    msg_dict['content'] = str(msg_dict['content'])[:1020] + '...'
                 if not msg_dict['content']:
                     msg_dict['content'] = "-Message has no content-"
                 quick_switch_dict[member_id]['embed'].add_field(name='{} | *{}*'.format(user, datetime.utcfromtimestamp(float(timestamp)).strftime('%H:%M %d.%m.%y' )), value=msg_dict['content'], inline=False)
@@ -851,32 +908,40 @@ class R6Bot(discord.Client):
             if current_index != 0:
                 await current_msg.add_reaction('⬅')
             await current_msg.add_reaction('☑')
+            await current_msg.add_reaction('ℹ')
             if (current_index+1) != len(loop_dict):
                 await current_msg.add_reaction('➡')
                 
             def check(reaction, user):
                 e = str(reaction.emoji)
                 if user != self.user and reaction.message.id == current_msg.id:
-                    return e.startswith(('⬅', '➡', '☑'))
+                    return e.startswith(('⬅', '➡',  'ℹ', '☑'))
                 else:
                     return False
             try:
                 reac, user = await self.wait_for('reaction_add', check=check, timeout=300)
             except:
                 return
-            if str(reac.emoji) == '☑' and not self.mod_mail_db[loop_dict[current_index]['member_obj'].id]['answered']:
-                self.mod_mail_db[loop_dict[current_index]['member_obj'].id]['answered'] = True
-                if current_index == len(loop_dict):
-                    current_index-=1
-                    del loop_dict[current_index+1]
+            if str(reac.emoji) == '☑':
+                if not self.mod_mail_db[loop_dict[current_index]['member_obj'].id]['answered']:
+                    self.mod_mail_db[loop_dict[current_index]['member_obj'].id]['answered'] = True
+                    if current_index == len(loop_dict):
+                        current_index-=1
+                        del loop_dict[current_index+1]
+                    else:
+                        del loop_dict[current_index]
+                    if len(loop_dict) == 0:
+                        await self.safe_delete_message(current_msg)
+                        await self.safe_send_message(current_msg.channel, content='Everything is answered!')
+                        return
+                    else:
+                        await current_msg.remove_reaction(reac.emoji, user)
                 else:
-                    del loop_dict[current_index]
-                if len(loop_dict) == 0:
                     await self.safe_delete_message(current_msg)
                     await self.safe_send_message(current_msg.channel, content='Everything is answered!')
                     return
-                else:
-                    await current_msg.remove_reaction(reac.emoji, user)
+            elif str(reac.emoji) == 'ℹ':
+                await self.safe_send_message(current_msg.channel, content=loop_dict[current_index]['member_obj'].id)
             elif str(reac.emoji) == '⬅' and current_index != 0:
                 current_index-=1
                 await current_msg.remove_reaction(reac.emoji, user)
@@ -1053,36 +1118,263 @@ class R6Bot(discord.Client):
             raise CommandError('ERROR: Please make sure the syntax is correct and resubmit the command!')
 
     @mods_only
-    async def cmd_ban(self, guild, author, mentions, leftover_args):
+    async def cmd_purge(self, message, author, guild, channel, mentions):
+        """
+        Usage: {command_prefix}purge <number of messages to purge> @UserName ["reason"]
+        Removes all messages from chat unless a user is specified;
+        then remove all messages by the user.
+        """
+        
+        # Shamelessly ripped and modified from R.Danny by Danny#0007.
+        # He did this the best so why reinvent the wheel
+        
+        parser = Arguments(add_help=False, allow_abbrev=False)
+        parser.add_argument('--user', '--users', '--u', nargs='+', help='Mentions, IDs, or Names of Target Users.^*')
+        parser.add_argument('--contains', '--has', '--c', nargs='+', help='Contents of Msg.^*')
+        parser.add_argument('--starts', '--begins', '--startswith', nargs='+', help='Check what Msg ends with.^*')
+        parser.add_argument('--ends','--endswith', nargs='+', help='Check what Msg starts with.^*')
+        parser.add_argument('--or', action='store_true', dest='_or', help='Flag; Use Logical OR for all checks.^*')
+        parser.add_argument('--not', action='store_true', dest='_not', help='Flag; Use Logical NOT for all checks.^*')
+        parser.add_argument('--emoji', '--emotes', '--emojis', '--emote', action='store_true', help='Flag; Checks for Custom Emoji.^*')
+        parser.add_argument('--bot', '--bots',  '--robots', action='store_const', const=lambda m: m.author.bot, help='Flag; Checks for Bots.^*')
+        parser.add_argument('--embeds', action='store_const', const=lambda m: len(m.embeds), help='Flag; Checks for Embeds.^*')
+        parser.add_argument('--files', action='store_const', const=lambda m: len(m.attachments), help='Flag; Checks for Files.^*')
+        parser.add_argument('--reactions', '--reacts', action='store_const', const=lambda m: len(m.reactions), help='Flag; Checks for Reactions.^*')
+        parser.add_argument('--search', '--limit', '--n', type=int, default=100, help='Number of Msgs to Search.^*')
+        parser.add_argument('--after', type=int, help='MSG ID to search after.^*')
+        parser.add_argument('--before', type=int, help='MSG ID to search before```.^*')
+
+        try:
+            _, *msg_args = shlex.split(message.content)
+            args = parser.parse_args(msg_args)
+        except Exception as e:
+            await self.safe_send_message(channel, content=str(e))
+            return
+        predicates = []
+        
+        if not msg_args:
+            return Response('Usage: !purge{}'.format(parser.format_help()[13:].replace("optional arguments:", "optional arguments:```").replace("],", "],\n ").replace(", --", ",\n  --").replace(".^*", "\n")))
+        
+        if args.bot:
+            predicates.append(args.bot)
+
+        if args.embeds:
+            predicates.append(args.embeds)
+
+        if args.files:
+            predicates.append(args.files)
+
+        if args.reactions:
+            predicates.append(args.reactions)
+
+        if args.emoji:
+            custom_emoji = re.compile(r'<:(\w+):(\d+)>')
+            predicates.append(lambda m: custom_emoji.search(m.content))
+
+        if args.user:
+            users = []
+            converter = MemberConverter()
+            for u in args.user:
+                try:
+                    user = await converter.convert(guild, u)
+                    users.append(user)
+                except Exception as e:
+                    await self.safe_send_message(channel, content=str(e))
+                    return
+
+            predicates.append(lambda m: m.author in users)
+
+        if args.contains:
+            predicates.append(lambda m: any(sub in m.content for sub in args.contains))
+
+        if args.starts:
+            predicates.append(lambda m: any(m.content.startswith(s) for s in args.starts))
+
+        if args.ends:
+            predicates.append(lambda m: any(m.content.endswith(s) for s in args.ends))
+
+        op = all if not args._or else any
+        def predicate(m):
+            r = op(p(m) for p in predicates)
+            if args._not:
+                return not r
+            return r
+
+        args.search = max(0, min(2000, args.search)) # clamp from 0-2000
+        
+        before = discord.Object(id=before) if args.before else message
+
+        after = discord.Object(id=after) if args.after else None
+
+        try:
+            deleted = await channel.purge(limit=args.search, before=before, after=after, check=predicate)
+        except discord.Forbidden as e:
+            raise ComamandError('I do not have permissions to delete messages.')
+        except discord.HTTPException as e:
+            raise ComamandError(f'Error: {e} (try a smaller search?)')
+
+        spammers = collections.Counter(m.author.display_name for m in deleted)
+        await self.log_action(user=author, message=deleted, action='bulk_message_delete')
+        deleted = len(deleted)
+        messages = [f'{deleted} message{" was" if deleted == 1 else "s were"} removed.']
+        if deleted:
+            messages.append('')
+            spammers = sorted(spammers.items(), key=lambda t: t[1], reverse=True)
+            messages.extend(f'**{name}**: {count}' for name, count in spammers)
+
+        to_send = '\n'.join(messages)
+
+        if len(to_send) > 2000:
+            return Response(f'Successfully removed {deleted} messages.', delete_after=10) 
+        else:
+            return Response(to_send, delete_after=10) 
+
+        
+    @mods_only
+    async def cmd_userinfo(self, guild, channel, author, mentions, leftover_args):
         """
         Usage {command_prefix}mute [@mention OR User ID] <time>
         Bans ppl
         """
+        if not leftover_args:
+            user = author
+        else:
+            user = await self.get_user_info(int(leftover_args.pop(0)))
+        if not user:
+            raise CommandError('No user found by that ID!')
+        member = discord.utils.get(guild.members, id=user.id)
+        try:
+            vc_activity = await self.do_search(guild_id=guild.id, channel_id=CHANS['vclog'], content=user.id)
+        except discord.HTTPException:
+            raise CommandError('ERROR: Bot still booting, please give me a moment to finish :)')
+        vc_string = ''
+        if vc_activity["total_results"] < 20:
+            vc_string = 'Nothing'
+        elif vc_activity["total_results"] < 60:
+            vc_string = 'Very Low'
+        elif vc_activity["total_results"] < 180:
+            vc_string = 'Low'
+        elif vc_activity["total_results"] < 540:
+            vc_string = 'Medium'
+        elif vc_activity["total_results"] < 1000:
+            vc_string = 'High'
+        elif vc_activity["total_results"] < 1620:
+            vc_string = 'Very High'
+        else:
+            vc_string = 'Very Fucking High, Like Holy Shit'
+
+        if member:
+            em = discord.Embed(colour=member.color)
+            em.add_field(name='Full Name:', value=f'{user.name}#{user.discriminator}', inline=False)
+            em.add_field(name='ID:', value=f'{user.id}', inline=False)
+            em.add_field(name='Created On:', value='{} ({} ago)'.format(user.created_at.strftime('%c'), strfdelta(datetime.utcnow() - user.created_at)), inline=False)
+            em.add_field(name='Joined On:', value='{} ({} ago)'.format(member.joined_at.strftime('%c'), strfdelta(datetime.utcnow() - member.joined_at)), inline=False)
+            member_search = await self.do_search(guild_id=guild.id, author_id=user.id)
+            em.add_field(name='Messages in Server:', value='{}'.format(member_search["total_results"]), inline=False)
+            em.add_field(name='Voice Channel Activity:', value=f'{vc_string}', inline=False)
+            em.add_field(name='Roles:', value='{}'.format(', '.join([f'<@&{role.id}>' for role in member.roles])), inline=False)
+            member_profile = await self.get_profile(member.id)
+            em.add_field(name='Nitro Since:', value='{} ({} ago)'.format(member_profile.premium_since, strfdelta(datetime.utcnow() - member_profile.premium_since)) if member_profile.premium else '-Not Subscribed-', inline=False)
+            if member_profile.hypesquad: 
+                em.add_field(name='User In HypeSquad', value='<:r6hype:420535089898848266> ', inline=True)
+            if member_profile.partner: 
+                em.add_field(name='User Is a Partner', value='<:r6partner:420535152117284865>', inline=True)
+            if member_profile.staff: 
+                em.add_field(name='User Is Staff', value='<:r6staff:420535209398763520>', inline=True)
+            connection_txt = '\n'.join(['{}{}: {}'.format('{}'.format(con['type']).rjust(9), '\u2705' if con['verified'] else '\U0001F6AB', con["name"]) for con in member_profile.connected_accounts])
+            if not connection_txt:
+                connection_txt = 'None'
+            em.add_field(name='Connections:', value='```{}```'.format(connection_txt), inline=False)
+            
+            em.set_author(name='%s AKA %s' % (member.nick, user.name), icon_url='https://i.imgur.com/FSGlsOR.png')
+        else:
+            em = discord.Embed(colour=discord.Colour(0xFFFF00))
+            em.add_field(name='Full Name:', value=f'{user.name}', inline=False)
+            em.add_field(name='ID:', value=f'{user.id}', inline=False)
+            em.add_field(name='Created On:', value='{} ({} ago)'.format(user.created_at.strftime('%c'), strfdelta(datetime.utcnow() - user.created_at)), inline=False)
+            em.set_author(name=user.name, icon_url='https://i.imgur.com/FSGlsOR.png')
+            member_search = await self.do_search(guild_id=guild.id, author_id=user.id)
+            em.add_field(name='Messages in Server:', value='{}'.format(member_search["total_results"]), inline=False)
+            em.add_field(name='Voice Channel Activity:', value=f'{vc_string}', inline=False)
+            bans = [obj for obj in bans if obj.user.id == user.id]
+            if bans:
+                em.add_field(name='User Banned from Server:', value=f'Reason: {bans.reason}', inline=False)
+                
+        em.set_thumbnail(url=user.avatar_url)
+        await self.safe_send_message(channel, embed=em)
+
+    @mods_only
+    async def cmd_ban(self, message, guild, author, mentions, raw_leftover_args):
+        """
+        Usage {command_prefix}mute [@mention OR User ID] <time>
+        Bans ppl
+        """
+        converter = UserConverter()
+        users = []
+        ban_time = 0
+        
+        if raw_leftover_args and re.match(r'[0-7]', raw_leftover_args[-1]):
+            ban_time = raw_leftover_args.pop()
         if mentions:
             for user in mentions:
-                leftover_args.pop(0)
+                users.append(user)
         else:
-            if len(leftover_args) == 1:
-                user = discord.utils.get(guild.members, id=int(leftover_args.pop(0)))
-                if user:
-                    mentions = [user]
-            if not mentions:
-                user = await self.get_user_info(int(leftover_args.pop(0)))
-                await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Banned user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
-                await self._connection.http.ban(self.watched_messages[reaction.message.id]['author_id'], reaction.message.guild.id, 0)
+            for item in raw_leftover_args:
+                users.append(await converter.convert(message, self, item))
                 
-        for user in mentions:
+        for user in users:
             try:
                 await self.safe_send_message(user, content=MSGS['banmsg'])
+            except:
+                pass
+            try:
                 await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Banned user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
-                await guild.ban(user)
+                await self.http.ban(user.id, guild.id, ban_time)
             except discord.Forbidden:
                 raise CommandError('Not enough permissions to ban user : {}'.format(user.name))
             except:
                 traceback.print_exc()
                 raise CommandError('Unable to ban user defined:\n{}\n'.format(user.name))
         return Response(':thumbsup:')
+
+
+    @mods_only
+    async def cmd_softban(self, message, guild, author, mentions, raw_leftover_args):
+        """
+        Usage {command_prefix}mute [@mention OR User ID] <time>
+        Bans ppl
+        """
+        converter = UserConverter()
+        users = []
+        ban_time = 7
         
+        if raw_leftover_args and re.match(r'[0-7]', raw_leftover_args[-1]):
+            ban_time = raw_leftover_args.pop()
+        if mentions:
+            for user in mentions:
+                users.append(user)
+        else:
+            for item in raw_leftover_args:
+                users.append(await converter.convert(message, self, item))
+                
+        for user in users:
+            # Not sure if I actually wanna send ppl who were softbanned a msg since we don't do it for kicks.
+            # Its implemented anyway if we decide otherwise
+            # try:
+                # await self.safe_send_message(user, content=MSGS['softbanmsg'])
+            # except:
+                # pass
+            try:
+                await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Softbanned user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
+                await self.http.ban(user.id, guild.id, ban_time)
+                await guild.unban(user)
+            except discord.Forbidden:
+                raise CommandError('Not enough permissions to ban user : {}'.format(user.name))
+            except:
+                traceback.print_exc()
+                raise CommandError('Unable to ban user defined:\n{}\n'.format(user.name))
+                
+        return Response(':thumbsup:')        
         
     async def log_action(self, user, action, *, message=None, after = None):
         file = None
@@ -1106,22 +1398,54 @@ class R6Bot(discord.Client):
             em.set_thumbnail(url=user.avatar_url)
         elif action == 'message_edit':
             em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), colour=discord.Colour(0xFFFF00), timestamp=datetime.utcnow())
-            em.set_author(name="𝅳𝅳𝅳User Edited Message", icon_url="https://i.imgur.com/NLpSnr2.png")
+            em.set_author(name="𝅳𝅳𝅳User Edited Message in %s" % message.channel.mention, icon_url="https://i.imgur.com/NLpSnr2.png")
             em.set_thumbnail(url=user.avatar_url)
+            
+            if len(message.content) > 1020:
+             message.content = f'{message.content[:1020]}...'
+             
             em.add_field(name='BEFORE: ', value=message.content, inline=False)
+            
             if message.attachments:
                 em.add_field(name='ATTACHMENTS: ', value=', '.join([attachment.url for attachment in message.attachments]), inline=False)
 
+            if len(after.content) > 1020:
+             after.content = f'{after.content[:1020]}...'
+             
             em.add_field(name='\nAFTER: ', value=after.content, inline=False)
         elif action == 'message_delete':
             em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0x305ebf), timestamp=datetime.utcnow())
-            em.set_author(name="𝅳𝅳𝅳User's Message Deleted", icon_url="https://i.imgur.com/MrrRQTo.png")
+            em.set_author(name="𝅳𝅳𝅳User's Message Deleted in <#%s>" % message['channel'], icon_url="https://i.imgur.com/MrrRQTo.png")
             em.set_thumbnail(url=user.avatar_url)
-            if not message:
-                message = 'None!'
-            em.add_field(name='Content: ', value=message, inline=False)
+            if not message['content']:
+                message['content'] = 'None!'
+            if len(message['content']) > 1020:
+                message['content'] = f'{message["content"][:1020]}...'
+            em.add_field(name='Content: ', value=message['content'], inline=False)
             if after:
                 em.add_field(name='ATTACHMENTS: ', value=', '.join([attachment.url for attachment in after]), inline=False)
+                
+        elif action == 'bulk_message_delete':
+            actor = user
+            author_dict = {msg.author: [] for msg in message}
+            for msg in message:
+                if msg.author in author_dict:
+                    author_dict[msg.author].append(msg)
+                else:
+                    print('dumb fucking error in bulk delete action logging')
+            for user, messages in author_dict.items():
+                msgs_content = [f' - `{msg.content if len(msg.content) < 1020 else msg.content[:1020]+"..."}`{"ATTACHMENTS: ```" if msg.attachments else ""}{", ".join([attachment.url for attachment in msg]) if msg.attachments else ""}{"```" if msg.attachments else ""}\n' for msg in messages]
+                em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0x305ebf), timestamp=datetime.utcnow())
+                em.set_author(name=f"𝅳𝅳𝅳User's Messages Bulk Deleted in message[0].channel.mention by actor.mention", icon_url="https://i.imgur.com/RsOSopy.png")
+                em.set_thumbnail(url=user.avatar_url)
+                count = 1
+                for msg_to_send in msgs_content:
+                    if count < 21:
+                        em.add_field(name=f'Message {count}', value=msg_to_send, inline=False)
+                    count+=1
+                if count > 20:
+                    em.set_footer(icon_url='https://cdn.discordapp.com/emojis/414648560110403595.gif', text=f'along with {count-20} more messages.')
+                    
         # elif action == 'avatar_change':
             # em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0xA330BF), timestamp=datetime.utcnow())
             # em.set_author(name="𝅳𝅳𝅳User Changed Avatar", icon_url="https://i.imgur.com/C21wipj.png")
@@ -1181,16 +1505,19 @@ class R6Bot(discord.Client):
             em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user),colour=discord.Colour(0xC69FBA), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Changed Important Roles", icon_url="https://i.imgur.com/Ubp44ao.png")
             em.set_thumbnail(url=user.avatar_url)
-
-            em.add_field(name='BEFORE: ', value='`, `'.join(x.name for x in user.roles[1:]), inline=False)
-            em.add_field(name='\nAFTER: ', value='`, `'.join(x.name for x in after.roles[1:]), inline=False)
+            
+            before_values = [x.name for x in user.roles[1:]]
+            after_values = [x.name for x in after.roles[1:]]
+            
+            em.add_field(name='BEFORE: ', value='`, `'.join(before_values) if before_values else 'None', inline=False)
+            em.add_field(name='\nAFTER: ', value='`, `'.join(after_values) if after_values else 'None', inline=False)
         else:
             print('how does one break the server log?')
             return
         sent_msg = await self.safe_send_message(self.get_channel(CHANS['serverlog']), embed=em, file=file)
         
     async def on_raw_reaction_remove(self, emoji, message_id, channel_id, user_id):
-        if not self.reactions_bugged_mode and not self.use_reactions: return
+        if not self.use_reactions: return
         if message_id in ROLE_REACT_MSGS:
             member = self.get_guild(SERVERS['main']).get_member(user_id)
             if emoji.id == REACTS['pc']:
@@ -1231,20 +1558,42 @@ class R6Bot(discord.Client):
             await role.edit(mentionable=False)
     
     async def on_raw_message_delete(self, message_id, channel_id):
+        if isinstance(self.get_channel(channel_id), discord.abc.PrivateChannel):
+            return
         message = discord.utils.get(self._connection._messages, id=message_id)
         if message:
-            await self.log_action(message=message.content, after=message.attachments, user=message.author, action='message_delete')
+            hacky_code_dict = {'content': message.content, 'channel': message.channel.id}
+            await self.log_action(message=hacky_code_dict, after=message.attachments, user=message.author, action='message_delete')
         else:
             if channel_id in self.messages_log and message_id in self.messages_log[channel_id]:
                 cached_msg = self.messages_log[channel_id][message_id]
                 author = await self.get_user_info(cached_msg['author'])
-                await self.log_action(message=cached_msg['content'], user=author, action='message_delete')
-            
+                hacky_code_dict = {'content': cached_msg['content'], 'channel': channel_id}
+                await self.log_action(message=hacky_code_dict, user=author, action='message_delete')            
                     
     async def on_raw_reaction_add(self, emoji, message_id, channel_id, user_id):
-        if not self.reactions_bugged_mode and not self.use_reactions: return
+        if not self.use_reactions: return
         if user_id == self.user.id:
             return
+        if channel_id == CHANS['modmail']:
+            modmail = self.get_channel(CHANS['modmail'])
+            if emoji.name == 'ℹ':
+                print(emoji.name)
+                msg = await modmail.get_message(message_id)
+                print(msg)
+                match = re.search(r'Reply ID: `([0-9]+)`$', msg.content)
+                if match:
+                    await self.safe_send_message(modmail, content=match.group(1))
+            elif emoji.name == '✅':
+                msg = await modmail.get_message(message_id)
+                match = re.search(r'Reply ID: `([0-9]+)`$', msg.content)
+                if match:
+                    auth_id = int(match.group(1))
+                    if auth_id in self.mod_mail_db:
+                        self.mod_mail_db[auth_id]['answered'] = True
+                        write_json('modmaildb.json', self.mod_mail_db)
+                        await self.safe_send_message(modmail, content=':thumbsup:')
+                        
         if message_id in ROLE_REACT_MSGS:
             member = self.get_guild(SERVERS['main']).get_member(user_id)
             if emoji.id == REACTS['pc']:
@@ -1273,7 +1622,7 @@ class R6Bot(discord.Client):
                     await member.add_roles(member_roles)
 
     async def on_reaction_add(self, reaction, member):
-        if not self.reactions_bugged_mode and not self.use_reactions: return
+        if not self.use_reactions: return
         if member.id == self.user.id:
             return
         if reaction.message.channel.id in [CHANS['drama']]:
@@ -1326,7 +1675,7 @@ class R6Bot(discord.Client):
                     if not user:
                         await self.safe_send_message(self.get_channel(CHANS['drama']), content=MSGS['dramaerror'].format('send ban message to ', self.watched_messages[reaction.message.id]['author_id'], 'Banning anyway...'))
                         await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Banned user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
-                await self._connection.http.ban(self.watched_messages[reaction.message.id]['author_id'], reaction.message.guild.id, 0)
+                await self.http.ban(self.watched_messages[reaction.message.id]['author_id'], reaction.message.guild.id, 0)
                             
     async def on_member_join(self, member):
         if member.guild.id == SERVERS['ban']: return
@@ -1423,7 +1772,8 @@ class R6Bot(discord.Client):
     async def on_message_edit(self, before, after):
         if before.author == self.user:
             return
-        await self.log_action(user=before.author, message=before, after=after,  action='message_edit')
+        if not isinstance(before.channel, discord.abc.PrivateChannel):
+            await self.log_action(user=before.author, message=before, after=after,  action='message_edit')
         await self.on_message(after, edit=True)
         
     async def on_voice_state_update(self, member, before, after):
@@ -1474,6 +1824,9 @@ class R6Bot(discord.Client):
                 await role.edit(mentionable=False)
 
     async def on_message(self, message, edit=False):
+        if message.channel.id == CHANS['modmail']:
+            self.last_modmail_poster = message.author.id
+            
         if message.author == self.user:
             return
         if (self.role_ping_toggle['game'] or self.role_ping_toggle['server']) and message.role_mentions:
@@ -1483,13 +1836,12 @@ class R6Bot(discord.Client):
             elif self.role_ping_toggle['server'] and self.role_ping_toggle['server'] in message.role_mentions:
                 await self.role_ping_toggle['server'].edit(mentionable=False)
                 self.role_ping_toggle['server'] = None
-            
-        if message.channel.id == CHANS['modmail']:
-            self.last_modmail_post = message.author.id
-        if self.last_modmail_post == self.user.id: 
+                
+        if self.last_modmail_poster == self.user.id: 
             self.divider_content = '__                                                                                                          __\n\n'
         else:
             self.divider_content = ''
+
         if isinstance(message.channel, discord.abc.PrivateChannel):
             print('pm')
             if message.author.id in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members] and len(discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['main']).members, id=message.author.id).roles) < 2 and message.author.id not in self.anti_stupid_modmail_list:
@@ -1677,8 +2029,10 @@ class R6Bot(discord.Client):
             return
         try:
             command, *args = shlex.split(message.content.strip())
+            command, *raw_args = message.content.strip().split()
         except:
             command, *args = message.content.strip().split()
+            command, *raw_args = message.content.strip().split()
         command = command[len(self.prefix):].lower().strip()
         
         
@@ -1744,6 +2098,9 @@ class R6Bot(discord.Client):
 
             if params.pop('leftover_args', None):
                             handler_kwargs['leftover_args'] = args
+
+            if params.pop('raw_leftover_args', None):
+                            handler_kwargs['raw_leftover_args'] = raw_args
                             
             args_expected = []
             for key, param in list(params.items()):

@@ -34,7 +34,7 @@ REACTS = { 'delete': 365466529065598976,
            'ps4': 357584218903281664,
            'xbox': 357583628634685440,
            'invitationals': 347822883122446336,
-           'r6ping': 357596077823623169,
+           'r6ping': 361727658154786826,
            'serverping': 357595858432163840
         }
 
@@ -107,6 +107,7 @@ MSGS = {
         'action': '```\nAction: {action}\nUser(s):{username}#{discrim} ({id})\nReason: {reason}```{optional_content}',
         'msg_content_error': 'I\'ve deleted your message in {} since I have detected your message might not meet the channels guidelines! Please review the guidelines in the pins and if you feel your post should be allowed, feel free to use me to modmail to staff!',
         'banmsg': 'You have been banned from the Rainbow6 discord. If you wish to appeal this ban, please fill out this form:\n<https://goo.gl/forms/kSVm0dfdO075PAOB2>',
+        'softbanmsg': 'You have been kicked from the Rainbow6 discord and all of your messages removed.',
         'dramaerror': 'Can\'t {} {} because they\'re not on the server.{}',
         'modmailaction': '→ I sent a message to {username} ({id}) {reason}, please refer to <#{action_log_id}> for more info',
         'modmailfirstime': '→ I sent a message to {username} ({id})  to remind them to read the welcome DM as they attempted to DM me without any roles',
