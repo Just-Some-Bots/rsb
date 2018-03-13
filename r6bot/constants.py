@@ -4,7 +4,7 @@ SUDO_ROLES = [253582130460753921, 253581597641670657, 269511788192595969, 278967
 
 ROLE_REACT_MSGS = [412964933920358407, 412964933685477376, 412964934570344458, 412964934625001473]
 
-REGEX = {'drama': r"(?<![\w])(nig(ger|ga)?|towelhead|twat|chink|beaner|dyke|jew|kike|tranny|cunt|cuck}spic|faggot|fag|SJW|retard(ed)?|fuck you|queer|coon|shemale|rape(ed)?|nazi|hitler|autist(ic)?|trump|fanbo.*|kill (yo)?urself|kys)s?(?![\w])",
+REGEX = {'drama': r"(?<![\w])(nig(ger|ga)?|towelhead|twat|chink|beaner|dyke|jew|kike|tranny|cunt|cuck|spic|faggot|fag|SJW|retard(ed)?|fuck you|queer|coon|shemale|rape(ed)?|nazi|hitler|autist(ic)?|trump|fanbo.*|kill (yo)?urself|kys)s?(?![\w])",
        'uplay': r"(?<![\w])(uplay|u play)(?![\w])", 
        'dox': r"(?<![\w])(?![\w])[!#$%&'*+./0-9=?_`a-z{|}~^-]+@[.a-z-]+\.(?:com|org|net)"
        }
