@@ -2,14 +2,22 @@ import json
 import re
 import time
 import asyncio
+import discord
 import inspect
 from datetime import datetime, timezone
 from .constants import DISCORD_EPOCH
 from .exceptions import CommandError
 
+def _get_from_guilds(bot, getter, argument):
+    result = None
+    for guild in bot.guilds:
+        result = getattr(guild, getter)(argument)
+        if result:
+            return result
+    return result
+
 class Converter:
-    @asyncio.coroutine
-    def convert(self, argument):
+    async def convert(self, argument):
         raise NotImplementedError('Derived classes need to implement this.')
 
 class IDConverter(Converter):
@@ -22,8 +30,7 @@ class IDConverter(Converter):
 
 class MemberConverter(IDConverter):
 
-    @asyncio.coroutine
-    def convert(self, guild, argument):
+    async def convert(self, guild, argument):
         match = self._get_id_match(argument) or re.match(r'<@!?([0-9]+)>$', argument)
         result = None
         if match is None:
@@ -40,18 +47,17 @@ class MemberConverter(IDConverter):
 
 class UserConverter(IDConverter):
 
-    @asyncio.coroutine
-    def convert(self, message, bot, argument):
+    async def convert(self, message, bot, argument, discrim_required=False):
         match = self._get_id_match(argument) or re.match(r'<@!?([0-9]+)>$', argument)
         result = None
         state = message._state
-
+        
         if match is not None:
             user_id = int(match.group(1))
             result = bot.get_user(user_id)
             if result is None:
                 try:
-                    result = bot.get_user_info(user_id)
+                    result = await bot.get_user_info(user_id)
                 except:
                     raise CommandError('User "{}" not found'.format(argument))
         else:
@@ -64,20 +70,18 @@ class UserConverter(IDConverter):
                 result = discord.utils.find(predicate, state._users.values())
                 if result is not None:
                     return result
-
-            predicate = lambda u: u.name == arg
-            result = discord.utils.find(predicate, state._users.values())
+            if not discrim_required:
+                predicate = lambda u: u.name == arg
+                result = discord.utils.find(predicate, state._users.values())
 
         if result is None:
-            bot.get_user_info(user_id)
             raise CommandError('User "{}" not found'.format(argument))
 
         return result
 
 class TextChannelConverter(IDConverter):
 
-    @asyncio.coroutine
-    def convert(self, guild, bot, argument):
+    async def convert(self, guild, bot, argument):
         match = self._get_id_match(argument) or re.match(r'<#([0-9]+)>$', argument)
         result = None
 
@@ -103,8 +107,7 @@ class TextChannelConverter(IDConverter):
 
 class VoiceChannelConverter(IDConverter):
 
-    @asyncio.coroutine
-    def convert(self, guild, bot, argument):
+    async def convert(self, guild, bot, argument):
         match = self._get_id_match(argument) or re.match(r'<#([0-9]+)>$', argument)
         result = None
 
@@ -130,8 +133,7 @@ class VoiceChannelConverter(IDConverter):
 
 class CategoryChannelConverter(IDConverter):
 
-    @asyncio.coroutine
-    def convert(self, guild, bot, argument):
+    async def convert(self, guild, bot, argument):
         match = self._get_id_match(argument) or re.match(r'<#([0-9]+)>$', argument)
         result = None
 
@@ -234,6 +236,26 @@ def timestamp_to_seconds(input_str):
         return output_time
     return None
 
+def cleanup_code(content):
+    """Automatically removes code blocks from the code."""
+    # remove ```py\n```
+    matches = list(re.finditer("(```)", content))
+    if len(matches) > 1:
+        return '\n'.join(content[matches[0].pos:matches[-1].endpos].split('\n')[1:-1])
+
+    # remove `foo`
+    return content.strip('` \n')
+
+def cleanup_blocks(content):
+    """Automatically removes code blocks from the code."""
+    # remove ```py\n```
+    matches = list(re.finditer("(```)", content))
+    if len(matches) > 1:
+        return content[(matches[0].end()):(matches[-1].start())]
+
+    # remove `foo`
+    return content.strip('` \n')
+
 def _get_variable(name):
     stack = inspect.stack()
     try:
@@ -248,7 +270,10 @@ def _get_variable(name):
     finally:
         del stack
     
-    
+def doc_string(docobj, prefix):
+    docs = '\n'.join(l.strip() for l in docobj.split('\n'))
+    return '```\n%s\n```' % docs.format(command_prefix=prefix)
+  
 def strfdelta(tdelta):
     t = {'days': 'days',
          'hours': 'hours',
