@@ -1,14 +1,15 @@
-Rhino's Server Bots
+Apex Discord Bot
 =========
 
-This repo contains branches which house the source code for my various Discord bots.
 
-The Bot's purpose is to be a singular, all in one solution for small to large servers so as to not have to rely on yet another black boxed solution with an incredibly high latency from an unknown and untrusted developer. It has a shit ton of features that I promise I'll fill out at a later date :P
+Please read the master branch's README before continuing.
 
-This isn't something that is friendly to users that don't know how to program, but it is developed in a way to make it easily adaptable to any server that it needs and can be easily mixed with code from other python bots that I develop and others develop equally.
+Holy fuck was this bot a pain in the dick. I put 10ish hours into fucking with Discord's wonky ass backend trying to fight its latency.
 
-It depends on [discord.py rewrite](https://github.com/Rapptz/discord.py/tree/rewrite) and a few other things here and there, any import errors can be corrected easily. 
+This bot does some fancy fucking auto expanding channels that works for discords that expect to fill a category (50 max channels) with voice channels. Essentially creates an empty or filling category and when filled, moves it to a filled category.
 
-Most of the modification work will probably be done in constants.py but disabiling features will all be done in bot.py. There are a few other experimental features I was working on but couldn't get functioning in the file too so feel free to uncomment and play around with them!
+Minimum movements and gfycat style names make it one of the best solutions for discords that want the flexibility of auto expanding channels and want their users to be able to find them.
 
+Naming scheme is defined in `monsters.py` but its essentially `[REGION]` + `adjective` + `monster`.
 
+PS: Fuck that discord for removing it after literally 2 days of use. I'm still pissed about that. 
