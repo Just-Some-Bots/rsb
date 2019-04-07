@@ -1,0 +1,187 @@
+{
+    "pilot": {
+        "Tactical": [
+            "Cloak",
+            "Pulse Blade",
+            "Grapple",
+            "Stim",
+            "A-Wall",
+            "Phase Shift",
+            "Holo Pilot"
+        ],
+        "Primary": [
+            "R-201 Carbine",
+            "R-101 Carbine",
+            "Hemlok BF-R",
+            "G2A5",
+            "V-47 Flatline",
+            "CAR",
+            "Alternator",
+            "Volt",
+            "R-97 Compact SMG",
+            "Spitfire",
+            "L-STAR",
+            "X-55 Devotion",
+            "Kraber-AP Sniper",
+            "D-2 Double Take",
+            "Longbow-DMR",
+            "EVA-8 Shotgun",
+            "Mastiff",
+            "EM-4 Cold War",
+            "R-6P Softball",
+            "Sidewinder SMR",
+            "EPG-1",
+            "SA-3 Mozambique",
+            "B3 Wingman"
+        ],
+        "Pistol": [
+            "Hammond P2016",
+            "RE-45 Auto",
+            "Wingman Elite"
+        ],
+        "Anti-Titan": [
+            "Charge Rifle",
+            "MGL Mag Launcher",
+            "LG-97 Thunderbolt",
+            "Archer"
+        ],
+        "Ordnance": [
+            "Frag Grenade",
+            "Arc Grenade",
+            "Firestar",
+            "Gravity Star",
+            "Electric Smoke Grenade",
+            "Satchel"
+        ],
+        "Kit 1": [
+            "Power Cell",
+            "Fast Regen",
+            "Ordnance Expert",
+            "Phase Embark"
+        ],
+        "Kit 2": [
+            "Kill Report",
+            "Wallhang",
+            "Hover",
+            "Low Profile"
+        ],
+        "Execution": [
+            "Neckbreaker",
+            "2-3-2 Combo",
+            "Knee Plus",
+            "Grand Theft Semi-Auto",
+            "Inner Pieces",
+            "Curb Check",
+            "Late Hit",
+            "In Your Face",
+            "Now You See Me",
+            "Shadow Boxing",
+            "Random",
+            "Get To The Point"
+        ],
+        "Boost": [
+            "Amped Weapons",
+            "Ticks",
+            "Pilot Sentry",
+            "Map Hack",
+            "Battery Back-Up",
+            "Radar Jammer",
+            "Titan Sentry",
+            "Smart Pistol",
+            "Phase Rewind",
+            "Hard Cover",
+            "Holo Pilot Nova",
+            "Dice Roll"
+        ]
+    },
+    "titan": {
+        "Titan": [
+            "Ion",
+            "Scorch",
+            "Northstar",
+            "Tone",
+            "Ronin",
+            "Monarch",
+            "Legion"
+        ],
+        "Kit 1": [
+            "Assault Chip",
+            "Stealth Auto-Eject",
+            "Turbo Engine",
+            "Overcore",
+            "Nuclear Ejection",
+            "Counter Ready"
+        ],
+        "Kit 2": {
+            "Ion": [
+                "Entangled Energy",
+                "Zero-Point Tripwire",
+                "Vortex Amplifier",
+                "Grand Cannon",
+                "Refraction Lens"
+            ],
+            "Monarch": [
+                "Shield Amplifier",
+                "Energy Thief",
+                "Rapid Rearm",
+                "Survival of the Fittest"
+            ],
+            "Scorch": [
+                "Wildfire Launcher",
+                "Tempered Plating",
+                "Inferno Shield",
+                "Fuel for the Fire",
+                "Scorched Earth"
+            ],
+            "Northstar": [
+                "Piercing Shot",
+                "Enhanced Payload",
+                "Twin Traps",
+                "Viper Thrusters",
+                "Threat Optics"
+            ],
+            "Tone": [
+                "Enhanced Tracker Rounds",
+                "Reinforced Particle Wall",
+                "Pulse-Echo",
+                "Rocket Barrage",
+                "Burst Loader"
+            ],
+            "Ronin": [
+                "Ricochet Rounds",
+                "Thunderstorm",
+                "Temporal Anomaly",
+                "Highlander",
+                "Phase Reflex"
+            ],
+            "Legion": [
+                "Enhanced Ammo Capacity",
+                "Sensor Array",
+                "Bulwark",
+                "Light-Weight Alloys",
+                "Hidden Compartment"
+            ]
+        },
+        "Titanfall Kit": [
+            "Dome Shield",
+            "Warpfall"
+        ],
+        "Core Upgrades": {
+            "Core Upgrade 1": [
+                "\n**Core Upgrade 1:** Arc Rounds",
+                "\n**Core Upgrade 1:** Missle Racks",
+                "\n**Core Upgrade 1:** Energy Transfer"
+            ],
+            "Core Upgrade 2": [
+                "\n**Core Upgrade 2:** Arm and Reload",
+                "\n**Core Upgrade 2:** Maelstrom",
+                "\n**Core Upgrade 2:** Energy Field"
+            ],
+            "Core Upgrade 3": [
+                "\n**Core Upgrade 3:** Multi-Target Missles",
+                "\n**Core Upgrade 3:** Superior Chassis",
+                "\n**Core Upgrade 3:** XO-15 Accelerator"
+            ]
+        }
+    }
+}
