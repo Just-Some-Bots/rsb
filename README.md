@@ -1,14 +1,12 @@
-Rhino's Server Bots
+Rhino's Stream Server Bot
 =========
 
-This repo contains branches which house the source code for my various Discord bots.
+Hey I stream at https://twitch.tv/s3xualrhinoceros!
 
-The Bot's purpose is to be a singular, all in one solution for small to large servers so as to not have to rely on yet another black boxed solution with an incredibly high latency from an unknown and untrusted developer. It has a shit ton of features that I promise I'll fill out at a later date :P
+Also please read the master branch's README before continuing...
 
-This isn't something that is friendly to users that don't know how to program, but it is developed in a way to make it easily adaptable to any server that it needs and can be easily mixed with code from other python bots that I develop and others develop equally.
+This bot was coded by me to at first be a meme bot and then to be a stream bot. It has no meme stuff but does a damn fine job at stalking me on Twitter and watching dutifully for me to be live on Twitch. 
 
-It depends on [discord.py rewrite](https://github.com/Rapptz/discord.py/tree/rewrite) and a few other things here and there, any import errors can be corrected easily. 
+I've scientifically engineered it to be just annoying enough to get people in your discord to watch you but not so annoying they leave. Honestly, Facebook should hire me.
 
-Most of the modification work will probably be done in constants.py but disabiling features will all be done in bot.py. There are a few other experimental features I was working on but couldn't get functioning in the file too so feel free to uncomment and play around with them!
-
-
+Without reviewing src, I don't think it does anything besides that as I use carlbot in most of the Rhino's Place's as that bot is toight. This, just like Titanfall bot, does a great job being that added layer on top.
