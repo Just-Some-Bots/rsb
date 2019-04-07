@@ -1,9 +1,9 @@
-Rhino's Server Bot
+Rhino's Server Bots
 =========
 
+This repo contains branches which house the source code for my various Discord bots.
 
-This Bot's purpose is to be a singular, all in one solution for small to large servers so as to not have to rely on yet another black boxed solution with an incredibly high latency from an unknown and untrusted developer. It has a shit ton of features that I promise I'll fill out at a later date :P
-
+The Bot's purpose is to be a singular, all in one solution for small to large servers so as to not have to rely on yet another black boxed solution with an incredibly high latency from an unknown and untrusted developer. It has a shit ton of features that I promise I'll fill out at a later date :P
 
 This isn't something that is friendly to users that don't know how to program, but it is developed in a way to make it easily adaptable to any server that it needs and can be easily mixed with code from other python bots that I develop and others develop equally.
 
