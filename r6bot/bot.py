@@ -37,6 +37,22 @@ from .utils import doc_string, cleanup_code, cleanup_blocks, clean_string, write
 # handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
 # logger.addHandler(handler)
 
+ROOT = os.path.abspath(os.path.dirname(__file__))
+ASSETS = os.path.join(ROOT, 'assets')
+ADJECTIVES = os.path.join(ASSETS, 'adjectives')
+MONSTERS = os.path.join(ASSETS, 'monsters')
+
+with open(ADJECTIVES) as f:
+    adjectives = f.read().splitlines()
+    
+with open(MONSTERS) as f:
+    monsters = f.read().splitlines()
+    
+def get_monster():
+    adjective = random.choice(adjectives)
+    monster = random.choice(monsters)
+    return f"{adjective}{monster}"
+
 
 
 class Response(object):
@@ -64,6 +80,7 @@ class R6Bot(discord.Client):
         self.tags = load_json('tags.json')
         self.tagblacklist = load_json('tagbl.json')
         self.serious_d_blacklist = load_json('sd_bl.json')
+        self.extra_drama_kwords = load_json('dramakwords.json')
         self.guild_whitelist = load_json('server_whitelist.json')
         self.twitch_watch_list = load_json('twitchwatchlist.json')
         self.muted_dict = {int(key): value for key, value in load_json('muted.json').items()}
@@ -82,6 +99,7 @@ class R6Bot(discord.Client):
         self.anti_stupid_modmail_list = []
         self.anti_spam_modmail_list = {}
         self.mention_spam_watch = {}
+        REGEX['drama'] = REGEX['drama_base'].format('|'.join(self.extra_drama_kwords))
         self.server_status = {'PC': 'online', 'XBOXONE': 'online', 'PS4': 'online', 'timestamp': None}
         
         # Variables used as storage of information between commands
@@ -140,19 +158,18 @@ class R6Bot(discord.Client):
                 print('Mute extended for {} for {} more seconds'.format(user.name if user != None else user_id, (datetime_timestamp - datetime.utcnow()).total_seconds()))
         else:
             return
-        if not user:
-            self.channel_bans[role_id].pop(user_id, None)
-            write_json('channel_banned.json', self.channel_bans)
-            return
+        self.channel_bans[role_id].pop(user_id, None)
+        write_json('channel_banned.json', self.channel_bans)
         try:
-            user = discord.utils.get(self.guilds, id=SERVERS['main']).get_member(user.id)
-            if user:
-                self.channel_bans[role_id].pop(user.id, None)
-                write_json('channel_banned.json', self.channel_bans)
-                if not timed_role:
-                    timed_role = discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['main']).roles, id=role_id)
-                if timed_role in user.roles:
-                    if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.remove_roles(timed_role, atomic = True)
+            if not user or isinstance(user, discord.User):
+                user = discord.utils.get(self.guilds, id=SERVERS['main']).get_member(user_id)
+                if not user:
+                    return
+                
+            if not timed_role:
+                timed_role = discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['main']).roles, id=role_id)
+            if timed_role in user.roles:
+                if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.remove_roles(timed_role, atomic = True)
         except:
             traceback.print_exc()
             
@@ -165,21 +182,24 @@ class R6Bot(discord.Client):
                 print('Mute extended for {} for {} more seconds'.format(user.name if user != None else user_id, (datetime_timestamp - datetime.utcnow()).total_seconds()))
         else:
             return
-        if not user:
-            del self.muted_dict[user_id]
-            write_json('muted.json', self.muted_dict)
-            return
+            
+        self.muted_dict.pop(user_id, None)
+        write_json('muted.json', self.muted_dict)
         try:
-            user = discord.utils.get(self.guilds, id=SERVERS['main']).get_member(user.id)
-            if user:
-                del self.muted_dict[user.id]
-                write_json('muted.json', self.muted_dict)
-                if timed_role in user.roles:
-                    if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.remove_roles(timed_role, atomic = True)
-                    em = discord.Embed(colour=discord.Colour(0xFFD800), description=MUTED_MESSAGES['timed_over'].format(roles=CHANS['roleswap'], rules=CHANS['rules'], muted=CHANS['muted']))
-                    await self.safe_send_message(user, embed=em)
-                    await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
+            if not user or isinstance(user, discord.User):
+                user = discord.utils.get(self.guilds, id=SERVERS['main']).get_member(user_id)
+                if not user:
+                    return
+                    
+            if timed_role in user.roles:
+                if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.remove_roles(timed_role, atomic = True)
+                em = discord.Embed(colour=discord.Colour(0xFFD800), description=MUTED_MESSAGES['timed_over'].format(roles=CHANS['roleswap'], rules=CHANS['rules'], muted=CHANS['muted']))
+                await self.safe_send_message(user, embed=em)
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
+                try:
                     await user.edit(mute=False)
+                except:
+                    pass
         except:
             traceback.print_exc()
             
@@ -423,8 +443,11 @@ class R6Bot(discord.Client):
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: 
                         roles = set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))
                         if set(user.roles) != roles:
-                            await user.edit(roles = list(roles))
-                    await user.edit(mute=True)
+                            await user.edit(roles = list(roles))                    
+                    try:
+                        await user.edit(mute=True)
+                    except:
+                        pass
                 except discord.Forbidden:
                     print('cannot add role to %s, permission error' % user.name)
                     
@@ -557,7 +580,7 @@ class R6Bot(discord.Client):
             is_tag = _get_variable('tag_name')
             orig_msg = _get_variable('message')
 
-            if [role for role in orig_msg.author.roles if role.id  in [ROLES['staff']]] or (is_tag and self.tags[is_tag][0] == 'unrestricted_eval'):
+            if [role for role in orig_msg.author.roles if role.id  in [ROLES['staff']]] or (is_tag and (self.tags[is_tag][0] == 'unrestricted_eval' or [role for role in orig_msg.author.roles if role.id  in [ROLES['tagmaster'], ROLES['staff']]])):
                 # noinspection PyCallingNonCallable
                 return await func(self, *args, **kwargs)
             else:
@@ -964,6 +987,33 @@ class R6Bot(discord.Client):
             return Response('%s is not Serious Discussion blacklisted!' % clean_bad_pings(user.name))
 
     @mods_only
+    async def cmd_unwatch(self, author, leftover_args):
+        """
+        Usage {command_prefix}unwatch [regex word(s)]
+        Removes the regex word from drama watcher
+        """
+        word = ' '.join(leftover_args)
+        if word in self.extra_drama_kwords:
+            self.extra_drama_kwords.remove(word)
+            REGEX['drama'] = REGEX['drama_base'].format('|'.join(self.extra_drama_kwords))
+            write_json('dramakwords.json', self.extra_drama_kwords)
+            return Response(':thumbsup:')
+        else:
+            raise CommandError('ERROR: Word not in drama watcher')
+
+    @mods_only
+    async def cmd_watch(self, author, leftover_args):
+        """
+        Usage {command_prefix}watch [regex word(s)]
+        Removes the regex word from drama watcher
+        """
+        word = ' '.join(leftover_args)
+        self.extra_drama_kwords.append(word)
+        REGEX['drama'] = REGEX['drama_base'].format('|'.join(self.extra_drama_kwords))
+        write_json('dramakwords.json', self.extra_drama_kwords)
+        return Response(':thumbsup:')
+
+    @mods_only
     async def cmd_removestream(self, author, channel_name):
         """
         Usage {command_prefix}removestream [twitch channel name]
@@ -1028,7 +1078,7 @@ class R6Bot(discord.Client):
         while True:
             
             quick_switch_dict = {}
-            quick_switch_dict = {'embed': discord.Embed(), 'member_obj': await self.get_user_info(auth_id)}
+            quick_switch_dict = {'embed': discord.Embed(), 'member_obj': await self.fetch_user(auth_id)}
             quick_switch_dict['embed'].set_author(name='{}({})'.format(quick_switch_dict['member_obj'].name, quick_switch_dict['member_obj'].id), icon_url=quick_switch_dict['member_obj'].avatar_url)
             od = collections.OrderedDict(islice(message_dict.items(),current_index, current_index+step))
             od = collections.OrderedDict(reversed(list(od.items())))
@@ -1040,7 +1090,7 @@ class R6Bot(discord.Client):
                     try:
                         user = discord.utils.get(guild.members, id=msg_dict['modreply']).name
                     except:
-                        user = await self.get_user_info(msg_dict['modreply'])
+                        user = await self.fetch_user(msg_dict['modreply'])
                         user = user.name
                 else:
                     user = quick_switch_dict['member_obj'].name
@@ -1093,7 +1143,7 @@ class R6Bot(discord.Client):
             return Response('Everything is answered!')
         quick_switch_dict = {}
         for member_id in unanswered_threads:
-            quick_switch_dict[member_id] = {'embed': discord.Embed(), 'member_obj': await self.get_user_info(member_id)}
+            quick_switch_dict[member_id] = {'embed': discord.Embed(), 'member_obj': await self.fetch_user(member_id)}
             quick_switch_dict[member_id]['embed'].set_author(name='{}({})'.format(quick_switch_dict[member_id]['member_obj'].name, quick_switch_dict[member_id]['member_obj'].id), icon_url=quick_switch_dict[member_id]['member_obj'].avatar_url)
             od = collections.OrderedDict(sorted(self.mod_mail_db[member_id]['messages'].items(), reverse=True))
             od = collections.OrderedDict(islice(od.items(), 10))
@@ -1101,7 +1151,7 @@ class R6Bot(discord.Client):
             for timestamp, msg_dict in od.items():
                 user = None
                 if msg_dict['modreply'] is not None:
-                    user = (await self.get_user_info(msg_dict['modreply'])).name
+                    user = (await self.fetch_user(msg_dict['modreply'])).name
                 else:
                     user = quick_switch_dict[member_id]['member_obj'].name
                 if len(str(msg_dict['content'])) > 1020:
@@ -1243,7 +1293,7 @@ class R6Bot(discord.Client):
             temp = list(raw_leftover_args)
             for item in temp:
                 try:
-                    user_to_append = await converter.convert(message, self, item)
+                    user_to_append = await converter.convert(message, self, item, discrim_required=True)
                     users.append(user_to_append)
                     raw_leftover_args.remove(item)
                 except:
@@ -1254,7 +1304,10 @@ class R6Bot(discord.Client):
             try:
                 user = guild.get_member(user.id)
                 if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = [role for role in user.roles if role.id not in UNPROTECTED_ROLES])
-                await user.edit(mute=False)
+                try:
+                    await user.edit(mute=False)
+                except:
+                    pass
                 del self.muted_dict[user.id]
                 write_json('muted.json', self.muted_dict)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Unmuted user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
@@ -1275,15 +1328,17 @@ class R6Bot(discord.Client):
         Usage {command_prefix}reason [message_id] <reason text>
         Allows you to specify a reason for any action in the action log based on the message ID that was sent
         """
-        msg_ids = message_id.split()
+        msg_ids = message_id.strip().split()
         action_log = discord.utils.get(guild.channels, id=CHANS['actions'])
+        no_id = False
         for msg_id in msg_ids:
             try:
-                msg = await action_log.get_message(msg_id)
+                msg = await action_log.fetch_message(msg_id)
             except:
                 if author.id in self.last_actions:
                     msg = self.last_actions[author.id]
                     leftover_args.insert(0, message_id)
+                    no_id = True
                 else:
                     traceback.print_exc()
                     raise CommandError(f"No Message ID found by ID {msg_id}")
@@ -1299,8 +1354,9 @@ class R6Bot(discord.Client):
             bonus_content = '' if not message.attachments else ', '.join([attch.url for attch in message.attachments])
             edited_content = f"```{edited_content}\nReason: {reason}\n```{bonus_content}"
             await self.safe_edit_message(msg, content=edited_content)
-            await self.safe_delete_message(message)
-        return Response(':thumbsup:', delete_after=10, delete_invoking=True)
+            if no_id:
+                return Response(':thumbsup:')
+        return Response(':thumbsup:')
         
     @mods_only
     async def cmd_cban(self, message, guild, author, mentions, raw_leftover_args):
@@ -1353,7 +1409,11 @@ class R6Bot(discord.Client):
             try:
                 user = guild.get_member(user.id)
                 if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles] + [role]))))
-                await user.edit(mute=True)
+
+                try:
+                    await user.edit(mute=True)
+                except:
+                    pass
             except discord.Forbidden:
                 raise CommandError('Not enough permissions to channel ban user : {}'.format(user.name))
             except:
@@ -1568,7 +1628,11 @@ class R6Bot(discord.Client):
             try:
                 user = guild.get_member(user.id)
                 if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                await user.edit(mute=True)
+
+                try:
+                    await user.edit(mute=True)
+                except:
+                    pass
             except discord.Forbidden:
                 raise CommandError('Not enough permissions to mute user : {}'.format(user.name))
             except:
@@ -1598,7 +1662,54 @@ class R6Bot(discord.Client):
         write_json('muted.json', self.muted_dict)
         return Response(response) 
         
-
+    @mods_only
+    async def cmd_addsgd(self, message, guild, author, mentions, raw_leftover_args):
+        """
+        Usage {command_prefix}addsgd [@mention OR User ID] 
+        Adds the "Serious Game Discussion" role to people
+        """
+        if not raw_leftover_args:
+            return Response(doc_string(inspect.getdoc(getattr(self, inspect.getframeinfo(inspect.currentframe()).function)), self.prefix))
+        
+        converter = UserConverter()
+        users = []
+        
+        
+        if mentions:
+            for user in mentions:
+                users.append(user)
+                try:
+                    raw_leftover_args.remove(user.mention)
+                except:
+                    raw_leftover_args.remove(f"<@!{user.id}>")
+                    
+        else:
+            temp = list(raw_leftover_args)
+            for item in temp:
+                try:
+                    user_to_append = await converter.convert(message, self, item, discrim_required=True)
+                    users.append(user_to_append)
+                    raw_leftover_args.remove(item)
+                except:
+                    traceback.print_exc()
+                    pass
+                
+        
+        sgdrole = discord.utils.get(guild.roles, id=ROLES['seriousd'])
+        if not sgdrole:
+            raise CommandError('No SGD role found')
+            
+        for user in users:
+            try:
+                user = guild.get_member(user.id)
+                await user.edit(roles = list(set(([role for role in user.roles] + [sgdrole]))))
+            except discord.Forbidden:
+                raise CommandError('Not enough permissions to mute user : {}'.format(user.name))
+            except:
+                traceback.print_exc()
+                raise CommandError('Unable to mute user defined:\n{}\n'.format(user.name))
+        return Response(f'Added SGD role to {user.mention}') 
+        
     @mods_only
     async def cmd_slowmode(self, message, author, guild, channel_mentions, raw_leftover_args):
         """
@@ -1606,8 +1717,6 @@ class R6Bot(discord.Client):
         Puts the channel or channels mentioned into a slowmode where users can only send messages every x seconds.
         To turn slow mode off, set the time between messages to "0"
         """
-        if not raw_leftover_args:
-            return Response(doc_string(inspect.getdoc(getattr(self, inspect.getframeinfo(inspect.currentframe()).function)), self.prefix))
         
         channels = []
         
@@ -1856,7 +1965,10 @@ class R6Bot(discord.Client):
             em = discord.Embed(colour=member.color)
             em.add_field(name='Full Name:', value=f'{user.name}#{user.discriminator}', inline=False)
             em.add_field(name='ID:', value=f'{user.id}', inline=False)
-            em.add_field(name='Joined On:', value='{} ({} ago)'.format(member.joined_at.strftime('%c'), strfdelta(datetime.utcnow() - member.joined_at)), inline=False)
+            if not member.joined_at:
+                em.add_field(name='Joined On:', value='ERROR: Cannot fetch', inline=False)
+            else:
+                em.add_field(name='Joined On:', value='{} ({} ago)'.format(member.joined_at.strftime('%c'), strfdelta(datetime.utcnow() - member.joined_at)), inline=False)
             em.add_field(name='Created On:', value='{} ({} ago)'.format(user.created_at.strftime('%c'), strfdelta(datetime.utcnow() - user.created_at)), inline=False)
             member_search = await self.do_search(guild_id=guild.id, author_id=user.id)
             em.add_field(name='Messages in Server:', value='{}'.format(member_search["total_results"]), inline=False)
@@ -1885,9 +1997,22 @@ class R6Bot(discord.Client):
             member_search = await self.do_search(guild_id=guild.id, author_id=user.id)
             em.add_field(name='Messages in Server:', value='{}'.format(member_search["total_results"]), inline=False)
             em.add_field(name='Voice Channel Activity:', value=f'{vc_string}', inline=False)
-            bans = [obj for obj in bans if obj.user.id == user.id]
-            if bans:
-                em.add_field(name='User Banned from Server:', value=f'Reason: {bans.reason}', inline=False)
+            try:
+                bans = await guild.get_ban(user)
+                reason = bans.reason
+                if not reason:
+                    history_items = []
+                    
+                    search_in_actions = (await self.do_search(guild_id=guild.id, channel_id=CHANS['actions'], content=user.id))['messages']
+                    for message_block in search_in_actions:
+                        for msg in message_block:
+                            if str(user.id) in msg["content"] and "Banned user" in msg["content"] and msg["content"] not in history_items:
+                                history_items.append(msg["content"])
+                    reason = (cleanup_blocks(history_items[-1]).strip().split("\n"))[2][7:]
+
+                em.add_field(name='User Banned from Server:', value=f'Reason: {reason}', inline=False)
+            except discord.NotFound:
+                pass
                 
         em.set_thumbnail(url=user.avatar_url)
         await self.safe_send_message(channel, embed=em)
@@ -2053,7 +2178,11 @@ class R6Bot(discord.Client):
             if datetime.utcnow() - timedelta(hours=24) < user.created_at:
                 em.set_footer(text="WARNING: User account is < 24 hours old (FRESH)", icon_url="https://i.imgur.com/RsOSopy.png")
         elif action == 'server_leave':
-            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Left after **{}**.'.format(strfdelta(datetime.utcnow() - user.joined_at)),colour=discord.Colour(0xCD5C5C), timestamp=datetime.utcnow())
+            if not user.joined_at:
+                em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Left Server', colour=discord.Colour(0xCD5C5C), timestamp=datetime.utcnow())
+            else:
+                em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Left after **{}**.'.format(strfdelta(datetime.utcnow() - user.joined_at)),colour=discord.Colour(0xCD5C5C), timestamp=datetime.utcnow())
+            
             em.set_author(name="𝅳𝅳𝅳User Left Server", icon_url="https://i.imgur.com/gturKf2.png")
             em.set_thumbnail(url=user.avatar_url)
         elif action == 'server_ban':
@@ -2207,32 +2336,20 @@ class R6Bot(discord.Client):
         
         if channel_id == CHANS['roleswap']:
             member = self.get_guild(SERVERS['main']).get_member(user_id)
-            if [role for role in member.roles if role.id == ROLES['muted']]:
+            if member and [role for role in member.roles if role.id == ROLES['muted']]:
                 return
             if emoji.id == REACTS['pc']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['pc'])
-                if member_roles:
-                    await member.remove_roles(member_roles, atomic=True)
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['pc'], reason=None)
             if emoji.id  ==  REACTS['xbox']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['xbox'])
-                if member_roles:
-                    await member.remove_roles(member_roles, atomic=True)
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['xbox'], reason=None)
             if emoji.id  ==  REACTS['ps4']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['ps4'])
-                if member_roles:
-                    await member.remove_roles(member_roles, atomic=True)
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['ps4'], reason=None)
             if emoji.id  ==  REACTS['r6ping']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['r6news'])
-                if member_roles:
-                    await member.remove_roles(member_roles, atomic=True)
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['r6news'], reason=None)
             if emoji.id  ==  REACTS['invitationals']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['invitationals'])
-                if member_roles:
-                    await member.remove_roles(member_roles, atomic=True)
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['invitationals'], reason=None)
             if emoji.id  ==  REACTS['serverping']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['servernews'])
-                if member_roles:
-                    await member.remove_roles(member_roles, atomic=True)
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['servernews'], reason=None)
 
     async def on_typing(self, channel, user, when):
         if channel.id in [CHANS['gamenews'], CHANS['servernews']]:
@@ -2258,7 +2375,7 @@ class R6Bot(discord.Client):
         else:
             if channel_id in self.messages_log and message_id in self.messages_log[channel_id]:
                 cached_msg = self.messages_log[channel_id][message_id]
-                author = await self.get_user_info(cached_msg['author'])
+                author = await self.fetch_user(cached_msg['author'])
                 hacky_code_dict = {'content': cached_msg['content'], 'channel': channel_id, 'message_id': message_id}
                 await self.log_action(message=hacky_code_dict, user=author, action='message_delete')            
                     
@@ -2273,14 +2390,12 @@ class R6Bot(discord.Client):
         if channel_id == CHANS['modmail']:
             modmail = self.get_channel(CHANS['modmail'])
             if emoji.name == 'ℹ':
-                print(emoji.name)
-                msg = await modmail.get_message(message_id)
-                print(msg)
+                msg = await modmail.fetch_message(message_id)
                 match = re.search(r'Reply ID: `([0-9]+)`$', msg.content)
                 if match:
                     await self.safe_send_message(modmail, content=match.group(1))
             elif emoji.name == '✅':
-                msg = await modmail.get_message(message_id)
+                msg = await modmail.fetch_message(message_id)
                 match = re.search(r'Reply ID: `([0-9]+)`$', msg.content)
                 if match:
                     auth_id = int(match.group(1))
@@ -2291,32 +2406,20 @@ class R6Bot(discord.Client):
                         
         if channel_id == CHANS['roleswap']:
             member = self.get_guild(SERVERS['main']).get_member(user_id)
-            if [role for role in member.roles if role.id == ROLES['muted']]:
+            if member and [role for role in member.roles if role.id == ROLES['muted']]:
                 return
             if emoji.id == REACTS['pc']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['pc'])
-                if member_roles:
-                    await member.add_roles(member_roles)
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['pc'], reason=None)
             if emoji.id  ==  REACTS['xbox']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['xbox'])
-                if member_roles:
-                    await member.add_roles(member_roles)
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['xbox'], reason=None)
             if emoji.id  ==  REACTS['ps4']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['ps4'])
-                if member_roles:
-                    await member.add_roles(member_roles)
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['ps4'], reason=None)
             if emoji.id  ==  REACTS['r6ping']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['r6news'])
-                if member_roles:
-                    await member.add_roles(member_roles)
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['r6news'], reason=None)
             if emoji.id  ==  REACTS['invitationals']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['invitationals'])
-                if member_roles:
-                    await member.add_roles(member_roles)
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['invitationals'], reason=None)
             if emoji.id  ==  REACTS['serverping']:
-                member_roles =  discord.utils.get(member.guild.roles, id=ROLES['servernews'])
-                if member_roles:
-                    await member.add_roles(member_roles)
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['servernews'], reason=None)
 
     async def on_reaction_add(self, reaction, member):
         if not self.use_reactions: return
@@ -2329,26 +2432,33 @@ class R6Bot(discord.Client):
                 return
             mutedrole = discord.utils.get(reaction.message.guild.roles, id=ROLES['muted'])
             if reaction.emoji.id == REACTS['delete']:
-                await self.safe_delete_message(await self.get_channel(self.watched_messages[reaction.message.id]['channel_id']).get_message(self.watched_messages[reaction.message.id]['message_id']))
+                await self.safe_delete_message(await self.get_channel(self.watched_messages[reaction.message.id]['channel_id']).fetch_message(self.watched_messages[reaction.message.id]['message_id']))
             if reaction.emoji.id == REACTS['mute']:
                 try:
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await user.edit(mute=True)
+
+                    try:
+                        await user.edit(mute=True)
+                    except:
+                        pass
                 except:
-                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.get_user_info(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
+                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.fetch_user(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
                     return
                 self.muted_dict[user.id] = None
                 em = discord.Embed(colour=discord.Colour(0xFF0000), description=MUTED_MESSAGES['plain'].format(rules=CHANS['rules'], muted=CHANS['muted']))
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
             if reaction.emoji.id == REACTS['24mute']:
                 try:
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await user.edit(mute=True)
+                    try:
+                        await user.edit(mute=True)
+                    except:
+                        pass
                 except:
-                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.get_user_info(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
+                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.fetch_user(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
                     return
                 muted_datetime = datetime.utcnow() + timedelta(hours = 24)
                 self.muted_dict[user.id] = muted_datetime.timestamp()
@@ -2357,14 +2467,18 @@ class R6Bot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user for 24 hrs', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted for 24 hrs'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 24 hrs'))
                 asyncio.ensure_future(self.queue_timed_mute(86400, user, mutedrole, user.id))
             if reaction.emoji.id == REACTS['48mute']:
                 try:
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await user.edit(mute=True)
+
+                    try:
+                        await user.edit(mute=True)
+                    except:
+                        pass
                 except:
-                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.get_user_info(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
+                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.fetch_user(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
                     return
                 muted_datetime = datetime.utcnow() + timedelta(hours = 48)
                 self.muted_dict[user.id] = muted_datetime.timestamp()
@@ -2373,7 +2487,7 @@ class R6Bot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user for 48 hrs', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted for 48 hrs'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 48 hrs'))
                 asyncio.ensure_future(self.queue_timed_mute(172800, user, mutedrole, user.id))
             if reaction.emoji.id == REACTS['ban']:
                 try:
@@ -2442,8 +2556,8 @@ class R6Bot(discord.Client):
             await self.log_action(user=before, after=after, action='nickname_change')
         if before.name != after.name:
             await self.log_action(user=before, after=after, action='name_change')
-        if before.avatar_url != after.avatar_url:
-            await self.log_action(user=before, after=after, action='avatar_change')
+        # if before.avatar_url != after.avatar_url:
+            # await self.log_action(user=before, after=after, action='avatar_change')
         if before.roles != after.roles:
             merged_roles = list((set(before.roles) - set(after.roles))) + list((set(after.roles) - set(before.roles)))
             if [role.id for role in merged_roles if role.id not in UNPROTECTED_ROLES]:
@@ -2499,7 +2613,10 @@ class R6Bot(discord.Client):
     async def on_voice_state_update(self, member, before, after):
         if before != after:
             if not (before and before.channel) and after and after.mute and not ROLES['staff'] in [role.id for role in member.roles]:
-                await member.edit(mute=False)
+                try:
+                    await member.edit(mute=False)
+                except:
+                    pass
             if before and after and (before.channel == after.channel):
                 return
             if member.id not in self.voice_changes:
@@ -2525,7 +2642,10 @@ class R6Bot(discord.Client):
                 await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=member.name, optional_content='', discrim=member.discriminator ,id=member.id, action='Automatically Voice Muted', reason='Moved voice channels 30+ times', ))
                 optional_content = ':radioactive::radioactive: `(VC Ban Applied)` '
                 member_roles = [vc_muted_role] + member.roles
-                await member.edit(mute=True)
+                try:
+                    await member.edit(mute=True)
+                except:
+                    pass
                 if not ROLES['staff'] in [role.id for role in member.roles]: await member.edit(roles = member_roles) 
             else:
                 
@@ -2646,6 +2766,10 @@ class R6Bot(discord.Client):
                 self.messages_log[message.channel.id] = {message.id: {'content': message.content, 'author': message.author.id}}
             else:
                 self.messages_log[message.channel.id][message.id] = {'content': message.content, 'author': message.author.id}
+                
+        if isinstance(message.author, discord.User):
+            return
+            
         try:
             this = [role for role in message.author.roles if role.id  in [ROLES['staff'], ROLES['bots']]]
         except:
@@ -2700,7 +2824,8 @@ class R6Bot(discord.Client):
             if re.search(REGEX['uplay'], message.content, re.IGNORECASE):
                 em = discord.Embed(description='**Noteworthy mention found in %s:**' % message.channel.mention, colour=discord.Colour(0x9d9bf4), timestamp=datetime.utcnow())
                 em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/TVlATNp.png")
-                async for msg in message.channel.history(limit=4, before=message, reverse=True):
+                history = reversed(await message.channel.history(limit=4, before=message).flatten())
+                for msg in history:
                     em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (msg.author.mention, msg.content), inline=False)
                 em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (message.author.mention, message.content), inline=False)
                 await self.safe_send_message(self.get_channel(CHANS['ubireports']), embed=em)
@@ -2715,11 +2840,12 @@ class R6Bot(discord.Client):
                 else:
                     for msg_id, msg_dict in self.watched_messages.items():
                         if msg_dict['message_id'] == message.id:
-                            await self.safe_delete_message(await self.get_channel(466756995517775872).get_message(msg_id))
+                            await self.safe_delete_message(await self.get_channel(466756995517775872).fetch_message(msg_id))
             if drama_matches:
                 em = discord.Embed(description=f"**Potential Drama found in {message.channel.mention}** - [Click Here]({message.jump_url}) to jump", colour=discord.Colour(0xffff00), timestamp=datetime.utcnow())
                 em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/TVlATNp.png")
-                async for msg in message.channel.history(limit=4, before=message, reverse=True):
+                history = reversed(await message.channel.history(limit=4, before=message).flatten())
+                for msg in history:
                     em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (msg.author.mention, msg.content), inline=False)
                 msg_value = message.content[:drama_matches.start()] + '**__' + message.content[drama_matches.start():drama_matches.end()] + '__**' + message.content[drama_matches.end():]
                 em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (message.author.mention, msg_value), inline=False)
@@ -2727,7 +2853,8 @@ class R6Bot(discord.Client):
             if dox_matches:
                 em = discord.Embed(ddescription=f"**Potential DOXXING found in {message.channel.mention}** - [Click Here]({message.jump_url}) to jump", colour=discord.Colour(0xff0000), timestamp=datetime.utcnow())
                 em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/ozWtGXL.png")
-                async for msg in message.channel.history(limit=4, before=message, reverse=True):
+                history = reversed(await message.channel.history(limit=4, before=message).flatten())
+                for msg in history:
                     em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (msg.author.mention, msg.content), inline=False)
                 msg_value = message.content[:dox_matches.start()] + '**__' + message.content[dox_matches.start():dox_matches.end()] + '__**' + message.content[dox_matches.end():]
                 em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (message.author.mention, msg_value), inline=False)
@@ -2753,7 +2880,10 @@ class R6Bot(discord.Client):
                 print(f"4 mention spam broken by {message.author.name}, muting")
                 try:
                     await message.author.edit(roles = list(set(([role for role in message.author.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await message.author.edit(mute=True)
+                    try:
+                        await message.author.edit(mute=True)
+                    except:
+                        pass
                 except:
                     pass
                 self.muted_dict[message.author.id] = None
@@ -2765,7 +2895,10 @@ class R6Bot(discord.Client):
                     print(f"2x Spam Watch broken by {message.author.name}, muting")
                     try:
                         await message.author.edit(roles = list(set(([role for role in message.author.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                        await message.author.edit(mute=True)
+                        try:
+                            await message.author.edit(mute=True)
+                        except:
+                            pass
                     except:
                         pass
                     self.muted_dict[message.author.id] = None
@@ -2784,7 +2917,7 @@ class R6Bot(discord.Client):
         for item in message.content.strip().split():
             try:
                 if 'discord.gg' in item or 'discordapp.com/invite' in item:
-                    invite = await self.get_invite(item)
+                    invite = await self.fetch_invite(item)
                     print(f"invite ID - {invite.guild.id}")
                     if invite.guild.id not in self.guild_whitelist:
                         if not [role for role in message.author.roles if role.id  in [ROLES['staff'], ROLES['bots']]]:
@@ -2799,7 +2932,7 @@ class R6Bot(discord.Client):
 
                             await self.safe_send_message(message.author, content=msg_to_send)
                             if not self.use_new_modmail: await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending discord invites'))
-                            await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, action='Deleted message', discrim=message.author.discriminator ,id=message.author.id, reason='Sent a nonwhitelisted invite url ({} : {})'.format(item, invite.guild.id), optional_content='Message sent in {}: `{}`\n'.format(message.channel.mention, message.clean_content)))
+                            await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, action='Deleted discord invite', discrim=message.author.discriminator ,id=message.author.id, reason='Sent a nonwhitelisted invite url ({} : {})'.format(item, invite.guild.id), optional_content='Message sent in {}: `{}`\n'.format(message.channel.mention, message.clean_content)))
                             return
             except:
                 pass
@@ -2879,8 +3012,6 @@ class R6Bot(discord.Client):
                             await self.safe_send_message(message.channel, content=clean_bad_pings(resp))
                         return
                     elif "restrict" in tag_flags and not [role for role in message.author.roles if role.id  in [ROLES['staff'], ROLES['tagmaster']]]:
-                        await self.safe_send_message(message.channel, content='Tag cannot be used by nonstaff members', expire_in=20)
-                        print("[Command] {0.id}/{0.name} ({1})".format(message.author, message_content))
                         return
                     elif "eval" in tag_flags:
                         resp = await self.cmd_eval(message.author, message.guild, message, message.channel, message.mentions, self.tags[tag_name][1], is_origin_tag=True)

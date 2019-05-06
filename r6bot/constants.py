@@ -23,10 +23,13 @@ R6_STATUS_COLORS = {'maintenance': 0x000000,
 
 SUDO_ROLES = [253582130460753921, 253581597641670657, 269511788192595969, 278967111454556170, 278980438754590731, 286363905544945664]
 
-REGEX = {'drama': r"(?<![\w])(nig(ger|ga|a)?|nib(ber|ba|a)?|towelhead|twat|chink|beaner|dyke|jew|kike|tranny|cunt|cuck|spic|faggot|fag|SJW|fuck you|queer|coon|shemale|rape(ed)?|nazi|hitler|autist(ic)?|trump|fanbo.*|kill (yo)?urself|kys)s?(?![\w])",
-       'uplay': r"(?<![\w])(uplay|u play)(?![\w])", 
-       'dox': r"(?<![\w])(?![\w])[!#$%&'*+./0-9=?_`a-z{|}~^-]+@[.a-z-]+\.(?:com|org|net)"
-       }
+REGEX = {'drama_base': r"(?<![\w])({})s?(?![\w])",
+        'drama': '',
+        'uplay': r"(?<![\w])(uplay|u play)(?![\w])", 
+        'dox': r"(?<![\w])(?![\w])[!#$%&'*+./0-9=?_`a-z{|}~^-]+@[.a-z-]+\.(?:com|org|net)"
+        }
+
+REGEX['drama'] = REGEX['drama_base'].format('')
        
 ROLES = { 'muted': 279039481875529729,
           'staff': 278967111454556170,
