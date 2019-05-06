@@ -51,7 +51,7 @@ class Arguments(argparse.ArgumentParser):
 
 class AnthemBot(discord.Client):
     def __init__(self):
-        super().__init__(max_messages=50000)
+        super().__init__(max_messages=50000, fetch_offline_members=True)
         # Auth Related 
         self.prefix = '!'
         self.token = BOT_TOKEN
@@ -64,6 +64,7 @@ class AnthemBot(discord.Client):
         self.tags = load_json('tags.json')
         self.tagblacklist = load_json('tagbl.json')
         # self.serious_d_blacklist = load_json('sd_bl.json')
+        self.extra_drama_kwords = load_json('dramakwords.json')
         self.guild_whitelist = load_json('server_whitelist.json')
         self.s95_user_list = [] #load_json('/home/bots/danbot/s95_ids.json')
         self.twitch_watch_list = load_json('twitchwatchlist.json')
@@ -86,6 +87,7 @@ class AnthemBot(discord.Client):
         self.slow_mode_dict = {}
         self.watched_messages = {}
         self.anti_stupid_modmail_list = []
+        REGEX['drama'] = REGEX['drama_base'].format('|'.join(self.extra_drama_kwords))
         
         # Variables used as storage of information between commands
         self._last_result = None
@@ -187,7 +189,10 @@ class AnthemBot(discord.Client):
                 em = discord.Embed(colour=discord.Colour(0xFFD800), description=MUTED_MESSAGES['timed_over'].format(roles=CHANS['roleswap'], rules=CHANS['rules']))
                 await self.safe_send_message(user, embed=em)
                 await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
-                await user.edit(mute=False)
+                try:
+                    await user.edit(mute=False)
+                except:
+                    pass
         except:
             traceback.print_exc()
             
@@ -631,6 +636,13 @@ class AnthemBot(discord.Client):
                 write_json('channel_banned.json', self.channel_bans)     
         print('Done!\n\nFinalizing User Login...')
         await self.user_http.static_login(self.user_token, bot=False)
+        print('Done!\n\nClearing Bans from Muted Dict...')
+        target_server = discord.utils.get(self.guilds, id=SERVERS['main'])
+        ban_list = await target_server.bans()
+        temp_dict = [user_id for user_id in self.muted_dict.keys() if discord.utils.find(lambda u: u.user.id == user_id, ban_list)]
+        for user_id in temp_dict:
+            del self.muted_dict[user_id]
+        write_json('muted.json', self.muted_dict)
         print('Done!\n\nPutting Together VC Tracker Data...')
         self.vc_categories = {'na': self.get_channel(CATS['na']),
                               'eu': self.get_channel(CATS['eu']),
@@ -641,11 +653,10 @@ class AnthemBot(discord.Client):
                 self.vc_tracker[category.id][channel.id] = {"mem_len": len(channel.members), "last_event": datetime.utcnow(), "pending_future": None}
         #self.vc_ready = True
         print('Done!\n\nDeserializing Mutes...')
-        target_server = discord.utils.get(self.guilds, id=SERVERS['main'])
         mutedrole = discord.utils.get(target_server.roles, id=ROLES['muted'])
-        temp_dict = dict(self.muted_dict)
+        temp_dict = dict({user_id: timestamp for user_id, timestamp in self.muted_dict.items() if timestamp or target_server.get_member(user_id)})
         for user_id, timestamp in temp_dict.items():
-            user = discord.utils.get(target_server.members, id=user_id)
+            user = target_server.get_member(user_id)
             if timestamp:
                 datetime_timestamp = datetime.fromtimestamp(timestamp)
                 if datetime.utcnow() < datetime_timestamp:
@@ -659,33 +670,46 @@ class AnthemBot(discord.Client):
                 print('Queueing serialized nontimed mute for {}'.format(user.name if user != None else user_id, ))
             if user:
                 try:
-                    if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await user.edit(mute=True)
+                    if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: 
+                        roles = set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))
+                        if set(user.roles) != roles:
+                            await user.edit(roles = list(roles))                    
+                    try:
+                        await user.edit(mute=True)
+                    except:
+                        pass
                 except discord.Forbidden:
                     print('cannot add role to %s, permission error' % user.name)
         print('Done!\n\nDeserializing Channel Bans...')
         temp_dict = dict(self.channel_bans)
+        temp_dict = dict({role_id: {user_id: timestamp for user_id, timestamp in user_blob.items() if timestamp or target_server.get_member(user_id)} for role_id, user_blob in self.channel_bans.items() if user_blob})
         for role_id, user_blob in temp_dict.items():
             cban_role = discord.utils.get(target_server.roles, id=role_id)
             if not user_blob: continue
             for user_id, timestamp in user_blob.items():
-                user = discord.utils.get(target_server.members, id=user_id)
+                user = target_server.get_member(user_id)
                 if timestamp:
                     datetime_timestamp = datetime.fromtimestamp(timestamp)
                     if datetime.utcnow() < datetime_timestamp:
                         asyncio.ensure_future(self.queue_timed_ban_role((datetime_timestamp-datetime.utcnow()).total_seconds(), user, cban_role, role_id, user_id))
-                        print('Queueing serialized mute for {} for {} seconds'.format(user.name if user != None else user_id, (datetime_timestamp - datetime.utcnow()).total_seconds()))
+                        print('Queueing serialized cban for {} for {} seconds'.format(user.name if user != None else user_id, (datetime_timestamp - datetime.utcnow()).total_seconds()))
                     else:
                         asyncio.ensure_future(self.queue_timed_ban_role(0, user, cban_role, role_id, user_id))
-                        print('Serialized mute period has passed for {}'.format(user.name if user != None else user_id))
+                        print('Serialized cban period has passed for {}'.format(user.name if user != None else user_id))
                         continue
                 else:
-                    print('Queueing serialized nontimed mute for {}'.format(user.name if user != None else user_id, ))
+                    print('Queueing serialized nontimed cban for {}'.format(user.name if user != None else user_id, ))
                 if user:
                     try:
-                        if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles] + [cban_role]))))
+                        if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: 
+                            if cban_role not in user.roles:
+                                await user.add_roles(cban_role)
                     except discord.Forbidden:
                         print('cannot add role to %s, permission error' % user.name)
+                    # try:
+                        # if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list())
+                    # except discord.Forbidden:
+                        # print('cannot add role to %s, permission error' % user.name)
                 
         
         print('Done!\n\nPopulating Message Logs...')
@@ -768,7 +792,7 @@ class AnthemBot(discord.Client):
             if send_if_fail:
                 if not quiet:
                     print("Sending instead")
-                msg = await self.safe_send_message(message.channel, content=new)
+                msg = await self.safe_send_message(message.channel, content=content)
         finally:
             if msg: return msg
             
@@ -936,6 +960,37 @@ class AnthemBot(discord.Client):
             author_roles = []
         if not ROLES['staff'] in [role.id for role in author.roles]: await author.edit(roles = author_roles)
         return Response('I\'ve removed all platform roles from you!', reply=True, delete_after=15, delete_invoking=True)
+
+    @mods_only
+    async def cmd_unwatch(self, author, leftover_args):
+        """
+        Usage {command_prefix}unwatch [regex word(s)]
+        Removes the regex word from drama watcher
+        """
+        if not leftover_args:
+            return Response(doc_string(inspect.getdoc(getattr(self, inspect.getframeinfo(inspect.currentframe()).function)), self.prefix))
+        word = ' '.join(leftover_args)
+        if word in self.extra_drama_kwords:
+            self.extra_drama_kwords.remove(word)
+            REGEX['drama'] = REGEX['drama_base'].format('|'.join(self.extra_drama_kwords))
+            write_json('dramakwords.json', self.extra_drama_kwords)
+            return Response(':thumbsup:')
+        else:
+            raise CommandError('ERROR: Word not in drama watcher')
+
+    @mods_only
+    async def cmd_watch(self, author, leftover_args):
+        """
+        Usage {command_prefix}watch [regex word(s)]
+        Removes the regex word from drama watcher
+        """
+        if not leftover_args:
+            return Response(doc_string(inspect.getdoc(getattr(self, inspect.getframeinfo(inspect.currentframe()).function)), self.prefix))
+        word = ' '.join(leftover_args)
+        self.extra_drama_kwords.append(word)
+        REGEX['drama'] = REGEX['drama_base'].format('|'.join(self.extra_drama_kwords))
+        write_json('dramakwords.json', self.extra_drama_kwords)
+        return Response(':thumbsup:')
     
     @mods_only
     async def cmd_eval(self, author, guild, message, channel, mentions, eval_content, is_origin_tag=False):
@@ -1504,7 +1559,7 @@ class AnthemBot(discord.Client):
         while True:
             
             quick_switch_dict = {}
-            quick_switch_dict = {'embed': discord.Embed(), 'member_obj': await self.get_user_info(auth_id)}
+            quick_switch_dict = {'embed': discord.Embed(), 'member_obj': await self.fetch_user(auth_id)}
             quick_switch_dict['embed'].set_author(name='{}({})'.format(quick_switch_dict['member_obj'].name, quick_switch_dict['member_obj'].id), icon_url=quick_switch_dict['member_obj'].avatar_url)
             od = collections.OrderedDict(islice(message_dict.items(),current_index, current_index+step))
             od = collections.OrderedDict(reversed(list(od.items())))
@@ -1516,7 +1571,7 @@ class AnthemBot(discord.Client):
                     try:
                         user = discord.utils.get(guild.members, id=msg_dict['modreply']).name
                     except:
-                        user = await self.get_user_info(msg_dict['modreply'])
+                        user = await self.fetch_user(msg_dict['modreply'])
                         user = user.name
                 else:
                     user = quick_switch_dict['member_obj'].name
@@ -1569,7 +1624,7 @@ class AnthemBot(discord.Client):
             return Response('Everything is answered!')
         quick_switch_dict = {}
         for member_id in unanswered_threads:
-            quick_switch_dict[member_id] = {'embed': discord.Embed(), 'member_obj': await self.get_user_info(member_id)}
+            quick_switch_dict[member_id] = {'embed': discord.Embed(), 'member_obj': await self.fetch_user(member_id)}
             quick_switch_dict[member_id]['embed'].set_author(name='{}({})'.format(quick_switch_dict[member_id]['member_obj'].name, quick_switch_dict[member_id]['member_obj'].id), icon_url=quick_switch_dict[member_id]['member_obj'].avatar_url)
             od = collections.OrderedDict(sorted(self.mod_mail_db[member_id]['messages'].items(), reverse=True))
             od = collections.OrderedDict(islice(od.items(), 20))
@@ -1577,7 +1632,7 @@ class AnthemBot(discord.Client):
             for timestamp, msg_dict in od.items():
                 user = None
                 if msg_dict['modreply'] is not None:
-                    user = (await self.get_user_info(msg_dict['modreply'])).name
+                    user = (await self.fetch_user(msg_dict['modreply'])).name
                 else:
                     user = quick_switch_dict[member_id]['member_obj'].name
                 if len(str(msg_dict['content'])) > 1020:
@@ -1731,7 +1786,10 @@ class AnthemBot(discord.Client):
             try:
                 user = guild.get_member(user.id)
                 if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = [role for role in user.roles if role.id not in UNPROTECTED_ROLES])
-                await user.edit(mute=False)
+                try:
+                    await user.edit(mute=False)
+                except:
+                    pass
                 del self.muted_dict[user.id]
                 write_json('muted.json', self.muted_dict)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Unmuted user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
@@ -1753,15 +1811,17 @@ class AnthemBot(discord.Client):
         Usage {command_prefix}reason [message_id] <reason text>
         Allows you to specify a reason for any action in the action log based on the message ID that was sent
         """
-        msg_ids = message_id.split()
+        msg_ids = message_id.strip().split()
         action_log = discord.utils.get(guild.channels, id=CHANS['actions'])
+        no_id = False
         for msg_id in msg_ids:
             try:
-                msg = await action_log.get_message(msg_id)
+                msg = await action_log.fetch_message(msg_id)
             except:
                 if author.id in self.last_actions:
                     msg = self.last_actions[author.id]
                     leftover_args.insert(0, message_id)
+                    no_id = True
                 else:
                     traceback.print_exc()
                     raise CommandError(f"No Message ID found by ID {msg_id}")
@@ -1774,10 +1834,12 @@ class AnthemBot(discord.Client):
                 edited_content[0] = edited_content[0][:(match.start(0)-1)]
             edited_content[0] = f"{edited_content[0]} (Taken by {author.name}#{author.discriminator})"
             edited_content = '\n'.join(edited_content)
-            edited_content = f"```{edited_content}\nReason: {reason}\n```"
+            bonus_content = '' if not message.attachments else ', '.join([attch.url for attch in message.attachments])
+            edited_content = f"```{edited_content}\nReason: {reason}\n```{bonus_content}"
             await self.safe_edit_message(msg, content=edited_content)
-            await self.safe_delete_message(message)
-        return Response(':thumbsup:', delete_after=10, delete_invoking=True)
+            if no_id:
+                return Response(':thumbsup:')
+        return Response(':thumbsup:')
         
         
     @mods_only
@@ -1831,7 +1893,10 @@ class AnthemBot(discord.Client):
             try:
                 user = guild.get_member(user.id)
                 if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles] + [role]))))
-                await user.edit(mute=True)
+                try:
+                    await user.edit(mute=True)
+                except:
+                    pass
             except discord.Forbidden:
                 raise CommandError('Not enough permissions to channel ban user : {}'.format(user.name))
             except:
@@ -1844,7 +1909,7 @@ class AnthemBot(discord.Client):
                 muted_datetime = datetime.utcnow() + timedelta(seconds = seconds_to_mute)
                 self.channel_bans[role.id][user.id] = muted_datetime.timestamp()
                 print('user {} now timed channel banned'.format(user.name))
-                action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Channel banned user for {}'.format(' '.join(raw_leftover_args)), reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
+                action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Applied {} channel ban for {}'.format(role.name[4:], ' '.join(raw_leftover_args)), reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
                 self.last_actions[author.id] = action_msg
                 em = discord.Embed(colour=discord.Colour(0xFF0000), description=CBAN_MESSAGES['timed'].format(cban_name=role.name[4:], time=' '.join(raw_leftover_args), rules=CHANS['rules']))
                 await self.safe_send_message(user, embed=em)
@@ -1852,7 +1917,7 @@ class AnthemBot(discord.Client):
                 response += ' channel banned for %s seconds' % seconds_to_mute
             else:
                 self.channel_bans[role.id][user.id] = None
-                action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Channel banned user forever', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
+                action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Applied {} channel ban forever'.format(role.name[4:]), reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
                 self.last_actions[author.id] = action_msg
                 em = discord.Embed(colour=discord.Colour(0xFF0000), description=CBAN_MESSAGES['plain'].format(cban_name=role.name[4:], rules=CHANS['rules']))
                 await self.safe_send_message(user, embed=em)
@@ -1874,7 +1939,7 @@ class AnthemBot(discord.Client):
         converter = UserConverter()
         user = None
         if mentions:
-            user = mention[0]
+            user = mentions[0]
                     
         else:
             try:
@@ -2046,7 +2111,10 @@ class AnthemBot(discord.Client):
             try:
                 user = guild.get_member(user.id)
                 if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                await user.edit(mute=True)
+                try:
+                    await user.edit(mute=True)
+                except:
+                    pass
             except discord.Forbidden:
                 raise CommandError('Not enough permissions to mute user : {}'.format(user.name))
             except:
@@ -2084,8 +2152,6 @@ class AnthemBot(discord.Client):
         Puts the channel or channels mentioned into a slowmode where users can only send messages every x seconds.
         To turn slow mode off, set the time between messages to "0"
         """
-        if not raw_leftover_args:
-            return Response(doc_string(inspect.getdoc(getattr(self, inspect.getframeinfo(inspect.currentframe()).function)), self.prefix))
         
         channels = []
         
@@ -2116,7 +2182,7 @@ class AnthemBot(discord.Client):
             if not seconds_to_slow and raw_leftover_args.startswith("0"):
                 await channel.edit(slowmode_delay=0)
                 await self.safe_send_message(channel, content='This channel is no longer in slow mode!')
-            elif seconds_to_slow and 0 < seconds_to_slow < 120:
+            elif seconds_to_slow and 0 < seconds_to_slow <= 120:
                 await channel.edit(slowmode_delay=seconds_to_slow)
                 await self.safe_send_message(channel, content='The delay between allowed messages is now **%s seconds**!' % seconds_to_slow)
             else:
@@ -2272,27 +2338,41 @@ class AnthemBot(discord.Client):
         to_send = '\n'.join(messages)
 
         if len(to_send) > 2000:
-            return Response(f'Successfully removed {deleted} messages.', delete_after=10, delete_invoking=True) 
+            return Response(f'Successfully removed {clean_string(deleted)} messages.', delete_after=10, delete_invoking=True) 
         else:
-            return Response(to_send, delete_after=10, delete_invoking=True) 
+            return Response(clean_string(to_send), delete_after=10, delete_invoking=True) 
 
         
     @mods_only
-    async def cmd_userinfo(self, message, guild, channel, author, mentions, leftover_args):
+    async def cmd_userinfo(self, guild, channel, message, author, mentions, raw_leftover_args):
         """
         Usage {command_prefix}userinfo [@mention OR User ID]
         Gathers info on a user and posts it in one easily consumable embed
         """
-        if not leftover_args:
-            user = author
-        else:
+        converter = UserConverter()
+        user = None
+        
+        
+        if mentions:
+            user = mentions[0]
             try:
-                user = await UserConverter().convert(message, self, ' '.join(leftover_args))
+                raw_leftover_args.remove(mentions[0].mention)
             except:
-                user = await self.get_user_info(int(leftover_args.pop(0)))
+                raw_leftover_args.remove(f"<@!{mentions[0].id}>")
+                    
+        else:
+            temp = " " if len(list(raw_leftover_args)) > 1 else ""
+            temp = temp.join(list(raw_leftover_args)).strip()
+            print(f"'{temp}'")
+            try:
+                user = await converter.convert(message, self, temp)
+            except:
+                traceback.print_exc()
+                pass
                 
         if not user:
-            raise CommandError('No user found by that ID!')
+            user = author
+            
         member = discord.utils.get(guild.members, id=user.id)
         try:
             vc_activity = await self.do_search(guild_id=guild.id, channel_id=CHANS['vclog'], content=user.id)
@@ -2318,7 +2398,10 @@ class AnthemBot(discord.Client):
             em = discord.Embed(colour=member.color)
             em.add_field(name='Full Name:', value=f'{user.name}#{user.discriminator}', inline=False)
             em.add_field(name='ID:', value=f'{user.id}', inline=False)
-            em.add_field(name='Joined On:', value='{} ({} ago)'.format(member.joined_at.strftime('%c'), strfdelta(datetime.utcnow() - member.joined_at)), inline=False)
+            if not member.joined_at:
+                em.add_field(name='Joined On:', value='ERROR: Cannot fetch', inline=False)
+            else:
+                em.add_field(name='Joined On:', value='{} ({} ago)'.format(member.joined_at.strftime('%c'), strfdelta(datetime.utcnow() - member.joined_at)), inline=False)
             em.add_field(name='Created On:', value='{} ({} ago)'.format(user.created_at.strftime('%c'), strfdelta(datetime.utcnow() - user.created_at)), inline=False)
             member_search = await self.do_search(guild_id=guild.id, author_id=user.id)
             em.add_field(name='Messages in Server:', value='{}'.format(member_search["total_results"]), inline=False)
@@ -2464,7 +2547,10 @@ class AnthemBot(discord.Client):
             if datetime.utcnow() - timedelta(hours=24) < user.created_at:
                 em.set_footer(text="WARNING: User account is < 24 hours old (FRESH)", icon_url="https://i.imgur.com/RsOSopy.png")
         elif action == 'server_leave':
-            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Left after **{}**.'.format(strfdelta(datetime.utcnow() - user.joined_at)),colour=discord.Colour(0xCD5C5C), timestamp=datetime.utcnow())
+            if not user.joined_at:
+                em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Left Server.',colour=discord.Colour(0xCD5C5C), timestamp=datetime.utcnow())
+            else:
+                em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Left after **{}**.'.format(strfdelta(datetime.utcnow() - user.joined_at)),colour=discord.Colour(0xCD5C5C), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Left Server", icon_url="https://i.imgur.com/gturKf2.png")
             em.set_thumbnail(url=user.avatar_url)
         elif action == 'server_ban':
@@ -2614,52 +2700,30 @@ class AnthemBot(discord.Client):
         user_id = payload.user_id
         if channel_id == CHANS['roleswap']:
             member = self.get_guild(SERVERS['main']).get_member(user_id)
-            if [role for role in member.roles if role.id == ROLES['muted']]:
+            if member and [role for role in member.roles if role.id == ROLES['muted']]:
                 return
             if emoji.id == REACTS['pc']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['pc'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['xbox']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['xbox'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['ps4']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['ps4'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['gameping']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['gamenews'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['colossus']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['colossus'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['interceptor']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['interceptor'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['ranger']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['ranger'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['storm']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['storm'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['lore']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['lore'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['jav']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['jav'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
-            if emoji.id  ==  REACTS['serverping']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['servernews'])
-                if member_roles:
-                    await member.remove_roles(member_roles)
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['pc'], reason=None)
+            if emoji.id == REACTS['xbox']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['xbox'], reason=None)
+            if emoji.id == REACTS['ps4']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['ps4'], reason=None)
+            if emoji.id == REACTS['gameping']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['gamenews'], reason=None)
+            if emoji.id == REACTS['colossus']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['colossus'], reason=None)
+            if emoji.id == REACTS['interceptor']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['interceptor'], reason=None)
+            if emoji.id == REACTS['ranger']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['ranger'], reason=None)
+            if emoji.id == REACTS['storm']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['storm'], reason=None)
+            if emoji.id == REACTS['lore']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['lore'], reason=None)
+            if emoji.id == REACTS['jav']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['jav'], reason=None)
+            if emoji.id == REACTS['serverping']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['servernews'], reason=None)
 
     async def on_typing(self, channel, user, when):
         if channel.id in [CHANS['gamenews'], CHANS['servernews']]:
@@ -2689,7 +2753,7 @@ class AnthemBot(discord.Client):
         else:
             if channel_id in self.messages_log and message_id in self.messages_log[channel_id]:
                 cached_msg = self.messages_log[channel_id][message_id]
-                author = await self.get_user_info(cached_msg['author'])
+                author = await self.fetch_user(cached_msg['author'])
                 hacky_code_dict = {'content': cached_msg['content'], 'channel': channel_id, 'message_id': message_id}
                 await self.log_action(message=hacky_code_dict, user=author, action='message_delete')            
                     
@@ -2705,13 +2769,13 @@ class AnthemBot(discord.Client):
             modmail = self.get_channel(CHANS['modmail'])
             if emoji.name == 'ℹ':
                 print(emoji.name)
-                msg = await modmail.get_message(message_id)
+                msg = await modmail.fetch_message(message_id)
                 print(msg)
                 match = re.search(r'Reply ID: `([0-9]+)`$', msg.content)
                 if match:
                     await self.safe_send_message(modmail, content=match.group(1))
             elif emoji.name == '✅':
-                msg = await modmail.get_message(message_id)
+                msg = await modmail.fetch_message(message_id)
                 match = re.search(r'Reply ID: `([0-9]+)`$', msg.content)
                 if match:
                     auth_id = int(match.group(1))
@@ -2722,52 +2786,30 @@ class AnthemBot(discord.Client):
                         
         if channel_id == CHANS['roleswap']:
             member = self.get_guild(SERVERS['main']).get_member(user_id)
-            if [role for role in member.roles if role.id == ROLES['muted']]:
+            if member and [role for role in member.roles if role.id == ROLES['muted']]:
                 return
             if emoji.id == REACTS['pc']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['pc'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['xbox']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['xbox'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['ps4']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['ps4'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['gameping']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['gamenews'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['colossus']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['colossus'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['interceptor']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['interceptor'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['ranger']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['ranger'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['storm']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['storm'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['lore']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['lore'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['jav']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['jav'])
-                if member_roles:
-                    await member.add_roles(member_roles)
-            if emoji.id  ==  REACTS['serverping']:
-                member_roles = discord.utils.get(member.guild.roles, id=ROLES['servernews'])
-                if member_roles:
-                    await member.add_roles(member_roles)
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['pc'], reason=None)
+            if emoji.id == REACTS['xbox']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['xbox'], reason=None)
+            if emoji.id == REACTS['ps4']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['ps4'], reason=None)
+            if emoji.id == REACTS['gameping']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['gamenews'], reason=None)
+            if emoji.id == REACTS['colossus']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['colossus'], reason=None)
+            if emoji.id == REACTS['interceptor']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['interceptor'], reason=None)
+            if emoji.id == REACTS['ranger']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['ranger'], reason=None)
+            if emoji.id == REACTS['storm']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['storm'], reason=None)
+            if emoji.id == REACTS['lore']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['lore'], reason=None)
+            if emoji.id == REACTS['jav']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['jav'], reason=None)
+            if emoji.id == REACTS['serverping']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['servernews'], reason=None)
 
     async def on_reaction_add(self, reaction, member):
         if not self.use_reactions: return
@@ -2780,26 +2822,32 @@ class AnthemBot(discord.Client):
                 return
             mutedrole = discord.utils.get(reaction.message.guild.roles, id=ROLES['muted'])
             if reaction.emoji.id == REACTS['delete']:
-                await self.safe_delete_message(await self.get_channel(self.watched_messages[reaction.message.id]['channel_id']).get_message(self.watched_messages[reaction.message.id]['message_id']))
+                await self.safe_delete_message(await self.get_channel(self.watched_messages[reaction.message.id]['channel_id']).fetch_message(self.watched_messages[reaction.message.id]['message_id']))
             if reaction.emoji.id == REACTS['mute']:
                 try:
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await user.edit(mute=True)
+                    try:
+                        await user.edit(mute=True)
+                    except:
+                        pass
                 except:
-                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.get_user_info(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
+                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.fetch_user(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
                     return
                 self.muted_dict[user.id] = None
                 em = discord.Embed(colour=discord.Colour(0xFF0000), description=MUTED_MESSAGES['plain'].format(rules=CHANS['rules']))
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
             if reaction.emoji.id == REACTS['24mute']:
                 try:
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await user.edit(mute=True)
+                    try:
+                        await user.edit(mute=True)
+                    except:
+                        pass
                 except:
-                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.get_user_info(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
+                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.fetch_user(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
                     return
                 muted_datetime = datetime.utcnow() + timedelta(hours = 24)
                 self.muted_dict[user.id] = muted_datetime.timestamp()
@@ -2808,14 +2856,17 @@ class AnthemBot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user for 24 hrs', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted for 24 hrs'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 24 hrs'))
                 asyncio.ensure_future(self.queue_timed_mute(86400, user, mutedrole, user.id))
             if reaction.emoji.id == REACTS['48mute']:
                 try:
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await user.edit(mute=True)
+                    try:
+                        await user.edit(mute=True)
+                    except:
+                        pass
                 except:
-                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.get_user_info(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
+                    await self.safe_send_message(self.get_channel(CHANS['drama']), content='Cannot mute user {} ({}) for they\'re not on the server'.format(await self.fetch_user(self.watched_messages[reaction.message.id]['author_id']).name, self.watched_messages[reaction.message.id]['author_id']))
                     return
                 muted_datetime = datetime.utcnow() + timedelta(hours = 48)
                 self.muted_dict[user.id] = muted_datetime.timestamp()
@@ -2824,7 +2875,7 @@ class AnthemBot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user for 48 hrs', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted for 48 hrs'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 48 hrs'))
                 asyncio.ensure_future(self.queue_timed_mute(172800, user, mutedrole, user.id))
             if reaction.emoji.id == REACTS['ban']:
                 try:
@@ -2912,8 +2963,8 @@ class AnthemBot(discord.Client):
             await self.log_action(user=before, after=after, action='nickname_change')
         if before.name != after.name:
             await self.log_action(user=before, after=after, action='name_change')
-        if before.avatar_url != after.avatar_url:
-            await self.log_action(user=before, after=after, action='avatar_change')
+        # if before.avatar_url != after.avatar_url:
+            # await self.log_action(user=before, after=after, action='avatar_change')
         if before.roles != after.roles:
             merged_roles = list((set(before.roles) - set(after.roles))) + list((set(after.roles) - set(before.roles)))
             if [role.id for role in merged_roles if role.id not in UNPROTECTED_ROLES]:
@@ -2960,7 +3011,7 @@ class AnthemBot(discord.Client):
     async def on_message_edit(self, before, after):
         if before.author == self.user:
             return
-        if before.guild.id == SERVERS['ban']: return
+        if before.guild and before.guild.id == SERVERS['ban']: return
         if not isinstance(before.channel, discord.abc.PrivateChannel):
             if before.content != after.content:
                 await self.log_action(user=before.author, message=before, after=after,  action='message_edit')
@@ -2973,7 +3024,10 @@ class AnthemBot(discord.Client):
     async def on_voice_state_update(self, member, before, after):
         if before != after:
             if not (before and before.channel) and after and after.mute and not ROLES['staff'] in [role.id for role in member.roles]:
-                await member.edit(mute=False)
+                try:
+                    await member.edit(mute=False)
+                except:
+                    pass
             if before and after and (before.channel == after.channel):
                 return
             if member.id not in self.voice_changes:
@@ -2999,14 +3053,17 @@ class AnthemBot(discord.Client):
                 await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=member.name, optional_content='', discrim=member.discriminator ,id=member.id, action='Automatically Voice Muted', reason='Moved voice channels 30+ times', ))
                 optional_content = ':radioactive:radioactive: `(VC Ban Applied)` '
                 member_roles = [vc_muted_role] + member.roles
-                await member.edit(mute=True)
+                try:
+                    await member.edit(mute=True)
+                except:
+                    pass
                 if not ROLES['staff'] in [role.id for role in member.roles]: await member.edit(roles = member_roles) 
             else:
                 
                 if vc_muted_role.id not in [role.id for role in member.roles]:
                     member_roles = [vc_muted_role] + member.roles
                     if not ROLES['staff'] in [role.id for role in member.roles]: await member.edit(roles = member_roles) 
-                optional_content = ':radioactive:bangbang:radioactive:'
+                optional_content = ':radioactive::bangbang::radioactive:'
                 
             if (before and before.channel) and (after and after.channel):
                 await self.safe_send_message(self.get_channel(CHANS['vclog']), content='{} **{}** `{}` `VCLog` `{}` **{}#{}** `{}` → `{}`'.format(optional_content, self.voice_changes[member.id]['changes'], datetime.utcnow().strftime('%y.%m.%d %H:%M:%S'), member.mention, clean_string(member.name), member.discriminator, before.channel.name, after.channel.name))
@@ -3119,6 +3176,10 @@ class AnthemBot(discord.Client):
                 self.messages_log[message.channel.id] = {message.id: {'content': message.content, 'author': message.author.id}}
             else:
                 self.messages_log[message.channel.id][message.id] = {'content': message.content, 'author': message.author.id}
+                
+        if isinstance(message.author, discord.User):
+            return
+            
         try:
             this = [role for role in message.author.roles if role.id  in [ROLES['staff'], ROLES['bots'], ROLES['submods'], ROLES['BW'], ROLES['CMs']]]
         except:
@@ -3155,11 +3216,12 @@ class AnthemBot(discord.Client):
                 else:
                     for msg_id, msg_dict in self.watched_messages.items():
                         if msg_dict['message_id'] == message.id:
-                            await self.safe_delete_message(await (self.get_channel(460798145236959232)).get_message(msg_id))
+                            await self.safe_delete_message(await (self.get_channel(460798145236959232)).fetch_message(msg_id))
             if drama_matches:
                 em = discord.Embed(description=f"**Potential Drama found in {message.channel.mention}** - [Click Here]({message.jump_url}) to jump", colour=discord.Colour(0xffff00), timestamp=datetime.utcnow())
                 em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/TVlATNp.png")
-                async for msg in message.channel.history(limit=4, before=message, reverse=True):
+                history = reversed(await message.channel.history(limit=4, before=message).flatten())
+                for msg in history:
                     em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (msg.author.mention, msg.content), inline=False)
                 msg_value = message.content[:drama_matches.start()] + '**__' + message.content[drama_matches.start():drama_matches.end()] + '__**' + message.content[drama_matches.end():]
                 em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (message.author.mention, msg_value), inline=False)
@@ -3167,7 +3229,8 @@ class AnthemBot(discord.Client):
             if dox_matches:
                 em = discord.Embed(ddescription=f"**Potential DOXXING found in {message.channel.mention}** - [Click Here]({message.jump_url}) to jump", colour=discord.Colour(0xff0000), timestamp=datetime.utcnow())
                 em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/ozWtGXL.png")
-                async for msg in message.channel.history(limit=4, before=message, reverse=True):
+                history = reversed(await message.channel.history(limit=4, before=message).flatten())
+                for msg in history:
                     em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (msg.author.mention, msg.content), inline=False)
                 msg_value = message.content[:dox_matches.start()] + '**__' + message.content[dox_matches.start():dox_matches.end()] + '__**' + message.content[dox_matches.end():]
                 em.add_field(name="~~                    ~~", value='**%s**:\n%s' % (message.author.mention, msg_value), inline=False)
@@ -3193,19 +3256,25 @@ class AnthemBot(discord.Client):
                 print(f"4 mention spam broken by {message.author.name}, muting")
                 try:
                     await message.author.edit(roles = list(set(([role for role in message.author.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                    await message.author.edit(mute=True)
+                    try:
+                        await message.author.edit(mute=True)
+                    except:
+                        pass
                 except:
                     pass
                 self.muted_dict[message.author.id] = None
                 await self.safe_send_message(message.author, content=MUTED_MESSAGES['plain'].format(rules=CHANS['rules'], muted=CHANS['muted']))
                 await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, optional_content='', discrim=message.author.discriminator ,id=message.author.id, action='Muted user', reason='Mention Spam in excess of 5 mentions per message'))
                 await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
-            elif len(message.mentions) > 2 and message.author.id in self.mention_spam_watch:
+            elif len(message.mentions) > 2 and message.author.id in self.mention_spam_watch and not edit:
                 if datetime.utcnow() - timedelta(minutes=30) < self.mention_spam_watch[message.author.id]:
                     print(f"2x Spam Watch broken by {message.author.name}, muting")
                     try:
                         await message.author.edit(roles = list(set(([role for role in message.author.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
-                        await message.author.edit(mute=True)
+                        try:
+                            await message.author.edit(mute=True)
+                        except:
+                            pass
                     except:
                         pass
                     self.muted_dict[message.author.id] = None
@@ -3223,8 +3292,8 @@ class AnthemBot(discord.Client):
         
         for item in message.content.strip().split():
             try:
-                if 'discord.gg' in item:
-                    invite = await self.get_invite(item)
+                if 'discord.gg' in item or 'discordapp.com/invite' in item:
+                    invite = await self.fetch_invite(item)
                     if invite.guild.id not in self.guild_whitelist:
                         if not [role for role in message.author.roles if role.id  in [ROLES['staff'], ROLES['bots'], ROLES['submods'], ROLES['BW'], ROLES['CMs']]]:
                             await self.safe_delete_message(message)

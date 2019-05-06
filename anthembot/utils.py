@@ -52,7 +52,7 @@ class UserConverter(IDConverter):
             result = bot.get_user(user_id)
             if result is None:
                 try:
-                    result = bot.get_user_info(user_id)
+                    result = bot.fetch_user(user_id)
                 except:
                     raise CommandError('User "{}" not found'.format(argument))
         else:

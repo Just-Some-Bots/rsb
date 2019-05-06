@@ -1,9 +1,12 @@
 ROLE_REACT_MSGS = [425803944803958795, 425803945164800001, 425803945919643648, 425803946401988618, 425803947148836865]
+       
+REGEX = {'drama_base': r"(?<![\w])({})s?(?![\w])",
+        'drama': '',
+        'uplay': r"(?<![\w])(uplay|u play)(?![\w])", 
+        'dox': r"(?<![\w])(?![\w])[!#$%&'*+./0-9=?_`a-z{|}~^-]+@[.a-z-]+\.(?:com|org|net)"
+        }
 
-REGEX = {'drama': r"(?<![\w])(nig(ger|ga)?|trap|towelhead|twat|chink|beaner|dyke|jew|kike|tranny|cunt|cuck|spic|faggot|fag|SJW|retard(ed)?|fuck you|queer|coon|shemale|rape(ed)?|nazi|hitler|autist(ic)?|trump|fanbo.*|kill (yo)?urself|kys)s?(?![\w])",
-       'uplay': r"(?<![\w])(uplay|u play)(?![\w])", 
-       'dox': r"(?<![\w])(?![\w])[!#$%&'*+./0-9=?_`a-z{|}~^-]+@[.a-z-]+\.(?:com|org|net)"
-       }
+REGEX['drama'] = REGEX['drama_base'].format('')
        
 CATS = { 'na': 531663194947584010,
          'eu': 531663231643680787,
