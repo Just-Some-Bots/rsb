@@ -1,0 +1,234 @@
+{
+  "--user": [
+    false,
+    "Please run: `python -m pip install --user -U -r requirements.txt` in the same cmd you received the error in"
+  ],
+  "ImportError pynacl": [
+    false,
+    "https://github.com/Just-Some-Bots/MusicBot/issues/223"
+  ],
+  "audio": [
+    false,
+    "\ud83c\udfa4 **If your bot cannot play music:**\n- Check if it is muted/server muted\n- Try changing voice region\n- Check that the issue is being caused by the bot, not you or the server\n- Check for errors in the console\n- Try `!restart` to restart the bot or `!disconnect` and then `!summon` to reconnect the bot.\n- Try moving the bot to a new voice channel and then back, or using `!disconnect`, `!summon`, and then `!play your music`. \n **This is a discord issue and we can't do anything about it.**\n\n\ud83c\udfa4 **If your bot is lagging when playing music:**\n- Check CPU/disk usage\n- Can your PC/the VPS' bandwidth/speed handle the bot?\n- Is there an issue on https://status.discordapp.com/"
+  ],
+  "badinstall": [
+    false,
+    "**You appear to have installed the bot incorrectly.**\nIf you followed a video guide, or downloaded a ZIP file, then you have installed the bot incorrectly. As a result, we will not provide support to you until you install the bot correctly, using the appropriate guide here: https://just-some-bots.github.io/MusicBot/. An error will be thrown if you have installed the bot incorrectly."
+  ],
+  "build tools": [
+    false,
+    "http://landinghub.visualstudio.com/visual-cpp-build-tools"
+  ],
+  "cache": [
+    "eval",
+    "em = discord.Embed(colour=discord.Colour(0x36393F))\nem.set_image(url=\"https://i.imgur.com/lGwx8Ga.png\")\nawait self.safe_send_message(channel, embed=em)\n"
+  ],
+  "changelog": [
+    false,
+    "http://just-some-bots.github.io/MusicBot/changelog/"
+  ],
+  "chcp": [
+    false,
+    "http://stackoverflow.com/questions/8142058/chcp-is-not-recognized-as-an-internal-or-external-command-operable-program-or"
+  ],
+  "cloud": [
+    "eval",
+    "em = discord.Embed(colour=discord.Colour(0x36393F))\nem.set_image(url=\"https://i.imgur.com/ZnAHJYe.png\")\nawait self.safe_send_message(channel, embed=em)\n"
+  ],
+  "commands": [
+    false,
+    "http://just-some-bots.github.io/MusicBot/using/commands/"
+  ],
+  "deprecation": [
+    false,
+    "If you're getting a warning about deprecation, you can ignore it. Deprecation is something for the developers to deal with, not you. It won't impact the running of the bot. Learn more: https://en.wikipedia.org/wiki/Deprecation"
+  ],
+  "deps": [
+    false,
+    "Run `update.bat` (Win) or `update.sh` (Linux/Mac)"
+  ],
+  "dll": [
+    false,
+    "Download the Visual C++ Redistributable:\n\nFor Windows 64-bit http://download.microsoft.com/download/9/3/F/93FCF1E7-E6A4-478B-96E7-D4B285925B00/vc_redist.x64.exe\n\nFor Windows 32-bit http://download.microsoft.com/download/9/3/F/93FCF1E7-E6A4-478B-96E7-D4B285925B00/vc_redist.x86.exe"
+  ],
+  "dockerguide": [
+    false,
+    "How to run musicbot using docker container\nhttps://github.com/TheerapakG/MusicBot/wiki/Guide-for-configuring-and-running-MusicBot's-container-using-Docker"
+  ],
+  "faq": [
+    false,
+    "https://just-some-bots.github.io/MusicBot/using/faq/"
+  ],
+  "file extension": [
+    false,
+    "\ud83d\udea7 A file extension, sometimes called a *file suffix* or a *filename extension*, is the character or group of characters after the period that make up an entire file name.\n\nThe file extension helps an operating system, like Windows, determine which program on your computer the file is associated with.\n\nFor example, the file **myhomework.docx** ends in *docx*, a file extension that might be associated with Microsoft Word on your computer. When you attempt to open this file, Windows sees that the file ends in a DOCX extension, which it already knows should be opened with the Microsoft Word program.\n\nFile extensions also often indicate the *file type*, or *file format*, of the file... but not always. Any file's extensions can be renamed but that won't convert the file to another format or change anything about the file other than this portion of its name.\n\nReference: http://pcsupport.about.com/od/termsf/g/file_extension.htm"
+  ],
+  "gitbashnoperms": [
+    false,
+    "\u26a0 **fatal: could not create work tree dir 'MusicBot': Permission denied**\nTo fix this, either run Git Bash with administrator privileges or run it in a place that doesn't require them.\nYou should open Git Bash by **right-clicking the folder you want the bot to go in** and choosing 'Git Bash Here'\nIf the option doesn't exist, you installed Git Bash wrong."
+  ],
+  "gitreset": [
+    false,
+    "\u26a0 If you can't `git pull` because Git is complaining about **local changes**, enter the command `git reset --hard` and then try doing `git pull` again."
+  ],
+  "guides": [
+    false,
+    "http://just-some-bots.github.io/MusicBot/"
+  ],
+  "help": [
+    "eval",
+    "em = discord.Embed(colour=discord.Colour(0x36393F))\nem.set_image(url=\"https://i.imgur.com/58uESHY.png\")\nawait self.safe_send_message(channel, embed=em)\n"
+  ],
+  "heroku": [
+    false,
+    "MusicBot, as is, will not support being hosted on heroku. Please use another host such as your computer or a VPS. We do not support users who modify the bot to work with heroku\nIt is recommended you use a host such as;\n**AWS:** https://aws.amazon.com/free/\nor\n**Digital Ocean:** https://m.do.co/c/04df8e10578f"
+  ],
+  "ids": [
+    false,
+    "https://github.com/Just-Some-Bots/MusicBot/wiki/FAQ#how-do-i-get-an-id"
+  ],
+  "king": [
+    false,
+    "https://cdn.discordapp.com/attachments/157598062020132865/563108584003469312/2017-02-01_0728.png"
+  ],
+  "leaving": [
+    false,
+    "\u2139 See here: https://github.com/Just-Some-Bots/MusicBot/issues/1433#issuecomment-353684748"
+  ],
+  "modification": [
+    false,
+    "The bot is open source and licensed under MIT which means you can modify it, but we\u2019re not here to give you help with doing so. This server is for help setting up and running the bot. We will not help you with modifying it or with errors that occur by modifying it."
+  ],
+  "musicbot status": [
+    false,
+    "MusicBot's public branches may not have been updated lately, but we're still working on it. The library MusicBot depends on just underwent an extensive rewrite which is requiring us to rewrite the bot too. It'll take some time. http://i.imgur.com/ar0XALQ.png"
+  ],
+  "musicbot testing": [
+    false,
+    "go to #139233765502222336 to test musicbot"
+  ],
+  "nssm": [
+    false,
+    "**\"How do I keep MusicBot running without having the Command Prompt open?\"**\nTo do this, you can use NSSM, a service installer that will run MusicBot in the background, restart MusicBot if it crashes, and run MusicBot on startup.\nThere's a guide written on how to set this up here:\nhttps://aleanaazure.xyz/doku.php?id=musicbot:nssm"
+  ],
+  "oauth": [
+    false,
+    "https://just-some-bots.github.io/MusicBot/using/configuration/"
+  ],
+  "options.ini.ini": [
+    false,
+    "\u26a0 Check for **options.ini.ini**\nIf you get a problem with \"OwnerID not specified\" etc, check that your config file is saved as `options.ini`.\nBy default, Windows hides file extensions, so you should check you **haven't** named this file `options.ini.ini`.\nThis is a common problem. If you have an `options` and `options.ini` file in your config folder, the correct one is `options`."
+  ],
+  "parsing": [
+    false,
+    "\u26a0 If your traceback says **Source contains parsing errors**, it is because the file you have edited is incorrectly format. The exact line that the issue is on will be shown underneath, allowing you to check it and resolve the issue. If you still can't figure out what your issue is, let us know."
+  ],
+  "path": [
+    false,
+    "\u26a0 **I can't clone using Git - the destination already exists**\nThis is because in the location you're running the Git command (shown to the left of the command), you already have a folder with the name you typed (by default, `MusicBot`).\n\nDelete this folder to be able to continue with cloning. If you've previously used the bot, you should backup your `options.ini`, `permissions.ini` and `autoplaylist.txt`. **If you are updating the bot, you don't need to clone again**, just type `!tag latest` here for information."
+  ],
+  "pebkac": [
+    "eval",
+    "em = discord.Embed(colour=discord.Colour(0x36393F))\nem.set_image(url=\"https://i.imgur.com/5Ewivni.jpg\")\nawait self.safe_send_message(channel, embed=em)\n"
+  ],
+  "permissions": [
+    false,
+    "https://just-some-bots.github.io/MusicBot/using/permissions/"
+  ],
+  "pip": [
+    false,
+    "\ud83d\udce5 Updating **pip**\n**Windows**: `python -m pip install --upgrade pip`\n**Linux/Mac**: `python3.5 -m pip install --upgrade pip`\n\nOn **Windows**, if Python doesn't install itself on your PATH right, you may get an **error**. Try either of these commands in this case:\n`py -3 -m pip install --upgrade pip`\n`C:\\\\Windows\\\\py.exe -3.5 -m pip install --upgrade pip`\""
+  ],
+  "pm2": [
+    false,
+    "https://aleanaazure.xyz/doku.php?id=musicbot:pm2"
+  ],
+  "profile": [
+    false,
+    "\ud83c\udfad Editing profile (using **MusicBot** commands)\nChanging the name/image on the bot application page does not change it for the bot account.\nTo do that, use these commands:\n- **Change name**: `!setname name`\n- **Change avatar**: `!setavatar url or attachment`"
+  ],
+  "pynacl": [
+    "eval",
+    "em = discord.Embed(colour=discord.Colour(0x36393F))\nem.set_image(url=\"https://i.imgur.com/5bQeXJX.png\")\nawait self.safe_send_message(channel, embed=em)\n"
+  ],
+  "python": [
+    false,
+    "**Having issues with python 3.6 or 3.7?**\nIf you're having trouble using the bot, it's possible that an older version of python might help, and you can find the recommended downgrade version here:\nhttps://www.python.org/ftp/python/3.5.4/python-3.5.4.exe"
+  ],
+  "requires code grant": [
+    false,
+    "https://cdn.discordapp.com/attachments/84319995256905728/218108171892293637/unknown.png"
+  ],
+  "skipf": [
+    false,
+    "As of 1.9.7 the bot no longer insta-skips when you skip normally if you have permission to do so. This is so you are able to contribute to the vote skip. The new way to insta-skip is by running `!skip f`, for those who prefer the legacy style of skipping an option has been added to use legacy skip, simply set the `LegacySkip` option to yes and skip as if you were still using 1.9.6!"
+  ],
+  "soundcloud": [
+    false,
+    "did you try running the update file"
+  ],
+  "spotify": [
+    false,
+    "http://just-some-bots.github.io/MusicBot/using/spotify/"
+  ],
+  "ssl cert": [
+    false,
+    "If you're on Windows, install this: https://support.comodo.com/index.php?/Knowledgebase/Article/GetAttachment/969/821026.\nIf you're using Python 3.6 on OSX, navigate to your `Applications/Python 3.6/` folder and double click`Install Certificates.command`."
+  ],
+  "supportedsites": [
+    false,
+    "\u2139 List of youtube-dl **supported sites**: https://rg3.github.io/youtube-dl/supportedsites.html"
+  ],
+  "timeout": [
+    false,
+    "\u26a0 If you frequently get errors such as `concurrent.futures._base.TimeoutError` or any other variation try again or change the voice region of the server that is causing the error."
+  ],
+  "troubleshooting": [
+    false,
+    "The issue you're experiencing may be covered here: https://just-some-bots.github.io/MusicBot/using/troubleshooting/"
+  ],
+  "unicodedecodeerror": [
+    false,
+    "**UnicodeDecodeError while installing dependencies**\nRight-click inside your MusicBot folder and select \u2018Git Bash here\u2019. Run pip install -U -r requirements.txt. This should install your dependencies successfully. You can then run your bot, there\u2019s no need to run the dependency update scripts again after that command."
+  ],
+  "unofficial": [
+    false,
+    "You can find guides for anything supported, and unsupported here. \nAnything not labelled `Official` will not be given further support in regards to installation or issues caused by that platform.\nhttps://aleanaazure.xyz/doku.php?id=musicbot"
+  ],
+  "update": [
+    false,
+    "http://just-some-bots.github.io/MusicBot/using/updating/"
+  ],
+  "valuevalue": [
+    false,
+    "\u26a0 **ValueValue was not expected at this time**:\nIn the `runbot.bat` file, delete the highlighted text as shown below. http://i.imgur.com/jJxSuwc.png"
+  ],
+  "vcvarsall": [
+    false,
+    "\u26a0 **Can't install dependencies, fails with 'Unable to find vcvarsall.bat'**\n\nIf you do not have **Visual Studio 2015** installed, download and install this: http://go.microsoft.com/fwlink/?LinkId=691126\n\nIf you have **Visual Studio 2015** installed, go to Add/Remove Programs, select Visual Studio 2015 and click 'Change'. You will need to ensure that the option shown below is selected, and then click 'Update'. http://i.imgur.com/RSGDkOz.png"
+  ],
+  "vps": [
+    false,
+    "**What's a VPS you say?!**\nA virtual private server (VPS) is a virtual machine sold as a service by an Internet hosting service. A VPS runs its own copy of an operating system, and customers have superuser-level access to that operating system instance, so they can install almost any software that runs on that OS. This means that you can run the MusicBot 24/7 and allow yourself to turn off your computer or let it sleep every so often.\n\nRecommended VPS hosts:\n**AWS:** https://aws.amazon.com/free/ While AWS has a free tier, it is only limited data usage under this plan. You may still pay montly for it, and you don't get a any customer support if an issue should arise.\n\n**Digital Ocean:** https://m.do.co/c/04df8e10578f You can run the MusicBot easily under the $5 per month plan. This is a set monthly payment and can use more data than AWS allows, you will also get customer support at no additional cost. *Also if you use the URL in this post you can get a $10 credit to your account when you sign up.*"
+  ],
+  "ping": [
+    "restrict",
+    "PONG!"
+  ],
+  "role ids": [
+    "eval",
+    "print('\\n'.join(['{} : {}'.format(role.name, role.id) for role in guild.roles]))"
+  ],
+  "utctimenow": [
+    "eval",
+    "time_now = str(datetime.now()).split(\".\")[0].split(\" \")\nawait self.safe_send_message(channel, content=\"{} **{}**\".format(time_now[0], time_now[1]))"
+  ],
+  "adjectiveanimal": [
+    "eval",
+    "ROOT = os.path.abspath(os.path.dirname(__file__))\nASSETS = os.path.join(ROOT, 'assets')\nADJECTIVES = os.path.join(ASSETS, 'adjectives')\nMONSTERS = os.path.join(ASSETS, 'monsters')\n\nwith open(ADJECTIVES) as f:\n    adjectives = f.read().splitlines()\n    \nwith open(MONSTERS) as f:\n    monsters = f.read().splitlines()\n    \nprint(f\"{random.choice(adjectives)}{random.choice(monsters)}\")"
+  ],
+  "watched words": [
+    "eval 276407407117074432 290537712644128768 538405408235323408",
+    "print('\\n'.join(self.extra_drama_kwords))"
+  ]
+}

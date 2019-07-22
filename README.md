@@ -1,14 +1,9 @@
-Rhino's Server Bots
+Rhino Bot Help Discord Bot
 =========
 
-This repo contains branches which house the source code for my various Discord bots.
 
-The Bot's purpose is to be a singular, all in one solution for small to large servers so as to not have to rely on yet another black boxed solution with an incredibly high latency from an unknown and untrusted developer. It has a shit ton of features that I promise I'll fill out at a later date :P
+Please read the master branch's README before continuing.
 
-This isn't something that is friendly to users that don't know how to program, but it is developed in a way to make it easily adaptable to any server that it needs and can be easily mixed with code from other python bots that I develop and others develop equally.
+A server bot for Rhinos Bot Help. This openly demo's everything thats good with the bot. It has some small changes here and there just to aid in the demo process and is a solid combo of everything from all other server bots.
 
-It depends on [discord.py rewrite](https://github.com/Rapptz/discord.py/tree/rewrite) and a few other things here and there, any import errors can be corrected easily. 
-
-Most of the modification work will probably be done in constants.py but disabiling features will all be done in bot.py. There are a few other experimental features I was working on but couldn't get functioning in the file too so feel free to uncomment and play around with them!
-
-
+If someone wanted to rip and tear into a bot this would prolly be the one I'd suggest next to titanfall's
