@@ -138,7 +138,7 @@ class R6Bot(discord.Client):
         self.slow_mode_debug = False
         self.ready_check = False
         self.use_reactions = True
-        self.use_new_modmail = False
+        self.use_new_modmail = True
         self.twitter_debug = False
         self.new_modmail_debug = False
         self.has_transitioned_mmdb = True
@@ -231,7 +231,8 @@ class R6Bot(discord.Client):
                         await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
                 else:
                     if target_channel:
-                        await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
+                        await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
+                    await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
                 try:
                     await user.edit(mute=False)
                 except:
@@ -583,6 +584,11 @@ class R6Bot(discord.Client):
                                connected_accounts=data['connected_accounts'])
    
     async def get_or_create_modmail_channel(self, user_id, creation_state='new'):
+        try:
+            user_id = int(user_id)
+        except:
+            print(f"{user_id} was not able to be made int")
+            
         # use a cached channel map to speed up calls between boots
         if user_id in self.cached_modmail_channels:
             if self.cached_modmail_channels[user_id]:
@@ -910,22 +916,16 @@ class R6Bot(discord.Client):
         try:
             chan = await channel.edit(**options)
         except discord.NotFound:
-            if hasattr(channel, "category") and hasattr(channel.category, "id") and channel.category.id in CATS.keys() and channel.id in [value.id for value in self.cached_modmail_channels.values()]:
+            if hasattr(channel, "category") and hasattr(channel.category, "id") and channel.category.id in CATS.values() and channel.id in [value.id for value in self.cached_modmail_channels.values()]:
                 if channel.topic:
                     del self.cached_modmail_channels[int(channel.topic)]
-                    await self.get_or_create_modmail_channel(channel.topic , creation_state="new")
-                    chan = await channel.edit(**options)
+                    new_chan = await self.get_or_create_modmail_channel(channel.topic , creation_state="new")
+                    chan = await new_chan.edit(**options)
                     print("Handled 404 in Modmail")
-            else:
-                print(hasattr(channel, "category"))
-                print(hasattr(channel.category, "id"))
-                print(channel.category.id in CATS.keys())
-                print(channel.id in [value.id for value in self.cached_modmail_channels.values()])
-                print(channel.topic)
             if not quiet:
                 print(f"Warning: Cannot edit channel \"{channel.name}:{channel.id}\", channel not found")
         finally:
-            if chan: return chan
+            return chan
             
     def mods_only(func):
         @wraps(func)
@@ -1509,11 +1509,8 @@ class R6Bot(discord.Client):
             channel = await self.get_or_create_modmail_channel(auth_id, creation_state=None)
             target_category = discord.utils.get(self.get_all_channels(), id=CATS[f"mmread"])
             if channel and channel.category.id != target_category:
-                try:
-                    await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['read']}{channel.name[2:]}", sync_permissions=True)
-                    asyncio.ensure_future(self.transition_modmail_channels())
-                except discord.NotFound:
-                    del self.cached_modmail_channels[member.id] 
+                await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['read']}{channel.name[2:]}", sync_permissions=True)
+                asyncio.ensure_future(self.transition_modmail_channels())
             return Response(':thumbsup:')
         else:
             raise CommandError('ERROR: User ID not found in Mod Mail DB')
@@ -1717,7 +1714,10 @@ class R6Bot(discord.Client):
         # I just want to say the fact that I have to do this instead of just specifying I want to do .split() but keep characters is so frustrating. fuckin guido and his weird decisions
         tag_content = [content.split() for content in tag_content.splitlines()]
         for content in tag_content:
-            content[-1] = f"{content[-1]}\n"
+            if content:
+                content[-1] = f"{content[-1]}\n"
+            else:
+                content.append("\n")
         tag_content = list(chain.from_iterable(tag_content))
         if is_anon: tag_content.insert(0, "anon")
         await self.cmd_r(channel, author, guild, tag_content)
@@ -1777,9 +1777,9 @@ class R6Bot(discord.Client):
             if channel.category.id != target_category:
                 await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['wfr']}{channel.name[2:]}", sync_permissions=True)
                 asyncio.ensure_future(self.transition_modmail_channels())
-            await self.safe_send_message(channel, embed=em)
-            if not self.use_new_modmail:
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=f"{author.name} sent this to {member.mention} in new mod mail:```{msg_to_send}```")
+            target_channel_msg = await self.safe_send_message(channel, embed=em)
+            jump_embed = discord.Embed(colour=discord.Colour(0x36393F), description=f"[click to jump (if available)]({target_channel_msg.jump_url})") if target_channel_msg else None
+            await self.safe_send_message(self.get_channel(CHANS['modmail']), content=f"{author.name} sent this to {member.mention} in new mod mail:```{msg_to_send}```", embed=jump_embed)
         else:
             raise CommandError('ERROR: User not found')
         
@@ -1844,13 +1844,11 @@ class R6Bot(discord.Client):
             await self.backup_modmail_log(member.id)
             target_category = discord.utils.get(self.get_all_channels(), id=CATS[f"mmwfr"])
             if channel.category.id != target_category:
-                try:
-                    await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['wfr']}{channel.name[2:]}", sync_permissions=True)
-                    asyncio.ensure_future(self.transition_modmail_channels())
-                    if not self.use_new_modmail:
-                        await self.safe_send_message(channel, embed=em)
-                except discord.NotFound:
-                    del self.cached_modmail_channels[member.id]
+                await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['wfr']}{channel.name[2:]}", sync_permissions=True)
+                asyncio.ensure_future(self.transition_modmail_channels())
+                target_channel_msg = await self.safe_send_message(channel, embed=em)
+                jump_embed = discord.Embed(colour=discord.Colour(0x36393F), description=f"[click to jump (if available)]({target_channel_msg.jump_url})") if target_channel_msg else None
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=f"{author.name} sent this to {member.mention} in new mod mail:```{msg_to_send}```", embed=jump_embed)
                     
             if not self.use_new_modmail:
                 return Response(':thumbsup: Sent this to {}:```{}```'.format(member.name, msg_to_send))
@@ -1921,7 +1919,8 @@ class R6Bot(discord.Client):
                         await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
                 else:
                     if target_channel:
-                        await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
+                        await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
+                    await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
             except discord.Forbidden:
                 raise CommandError('Not enough permissions to mute user : {}'.format(user.name))
             except:
@@ -2055,7 +2054,8 @@ class R6Bot(discord.Client):
                     await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason=f'as they were assigned {role.name}'))
             else:
                 if target_channel:
-                    await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason=f'as they were assigned {role.name}'))
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason=f'as they were assigned {role.name}'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason=f'as they were assigned {role.name}'))
         
         write_json('channel_banned.json', self.channel_bans)
         return Response(response) 
@@ -2271,7 +2271,8 @@ class R6Bot(discord.Client):
                     await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were warned'))
             else:
                 if target_channel:
-                    await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were warned'))
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were warned'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were warned'))
         
         return Response(':thumbsup:') 
 
@@ -2357,7 +2358,8 @@ class R6Bot(discord.Client):
                     await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
             else:
                 if target_channel:
-                    await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
         
         write_json('muted.json', self.muted_dict)
         return Response(response) 
@@ -3073,9 +3075,12 @@ class R6Bot(discord.Client):
             await role.edit(mentionable=True)
             await asyncio.sleep(30)
             await role.edit(mentionable=False)
+            
     async def on_guild_channel_delete(self, channel):
         if channel.id in self.cached_modmail_channels.values():
             new_cached_values = {key:val for key, val in self.cached_modmail_channels.items() if val != channel.id}
+            self.cached_modmail_channels = new_cached_values
+            
     async def on_raw_message_delete(self, payload):
         channel_id = payload.channel_id
         message_id = payload.message_id
@@ -3180,7 +3185,8 @@ class R6Bot(discord.Client):
                         await self.safe_send_message(chan, content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
                 else:
                     if target_channel:
-                        await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
+                        await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
+                    await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
             if reaction.emoji.id == REACTS['24mute']:
                 try:
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))))
@@ -3208,7 +3214,8 @@ class R6Bot(discord.Client):
                         await self.safe_send_message(chan, content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 24 hrs'))
                 else:
                     if target_channel:
-                        await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 24 hrs'))
+                        await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 24 hrs'))
+                    await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 24 hrs'))
                 asyncio.ensure_future(self.queue_timed_mute(86400, user, mutedrole, user.id))
             if reaction.emoji.id == REACTS['48mute']:
                 try:
@@ -3238,7 +3245,8 @@ class R6Bot(discord.Client):
                         await self.safe_send_message(chan, content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 48 hrs'))
                 else:
                     if target_channel:
-                        await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 48 hrs'))
+                        await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 48 hrs'))
+                    await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 48 hrs'))
                 asyncio.ensure_future(self.queue_timed_mute(172800, user, mutedrole, user.id))
             if reaction.emoji.id == REACTS['ban']:
                 try:
@@ -3330,9 +3338,10 @@ class R6Bot(discord.Client):
                         print('user {} unmuted'.format(before.name))
                     write_json('muted.json', self.muted_dict)
                 if not [role for role in before.roles if role.id  in [ROLES['seriousd']]] and [role for role in after.roles if role.id  in [ROLES['seriousd']]]:
-                    self.serious_d_blacklist.remove(before.id)
-                    print('user {} removed from SD blacklist'.format(before.name))
-                    write_json('sd_bl.json', self.serious_d_blacklist)
+                    if before.id in self.serious_d_blacklist:
+                        self.serious_d_blacklist.remove(before.id)
+                        print('user {} removed from SD blacklist'.format(before.name))
+                        write_json('sd_bl.json', self.serious_d_blacklist)
                 if [role for role in before.roles if role.id  in [ROLES['seriousd']]] and not [role for role in after.roles if role.id  in [ROLES['seriousd']]]:
                     self.serious_d_blacklist.append(before.id)
                     print('user {} now in SD blacklist'.format(before.name))
@@ -3514,13 +3523,18 @@ class R6Bot(discord.Client):
                         msg_attachments = '\n~Attachments: {}'.format(msg_attachments)
                 else:
                     msg_attachments = ''
-                    
+                
+                ban_roles = [role.name for role in message.author.roles if role.id in self.channel_bans]
+                msg_alert = ""
                 if message.author.id in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['ban']).members] and message.author.id not in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members]:
-                    msg_alert = '\n**__WARNING: USER IN BANNED SERVER__**'
-                elif message.author.id in self.serious_d_blacklist:
-                    msg_alert = '\n**__WARNING: USER IN SERIOUS DISCUSSION BLACKLIST__**'
+                    msg_alert += '\n**__WARNING: USER IN BANNED SERVER__**'
                 else:
-                    msg_alert = ''
+                    if message.author.id in self.serious_d_blacklist:
+                        msg_alert += '\n**__WARNING: USER IN SERIOUS DISCUSSION BLACKLIST__**'
+                    if ban_roles:
+                        msg_alert = f'\n**__WARNING: USER HAS THE FOLLOWING CHANNEL BANS "{", ".join([role_name[4:] for role_name in ban_roles])}"__**'
+                    if datetime.utcnow() - timedelta(hours=48) < message.author.created_at:
+                        msg_alert = f'\n**__WARNING: USER HAS ACCOUNT LESS THAN 48 HRS OLD__**'
                     
                 if edit:
                     msg_edit = 'EDITED MSG: '
@@ -3576,7 +3590,7 @@ class R6Bot(discord.Client):
                     
                 if message.author.id in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members] and len(discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['main']).members, id=message.author.id).roles) < 2 and message.author.id not in self.anti_stupid_modmail_list:
                     
-                    em = discord.Embed(description=f"**{self.user.mention}**", colour=message.guild.me.color)
+                    em = discord.Embed(description=f"**{self.user.mention}**", colour=discord.utils.get(self.guilds, id=SERVERS['main']).me.color)
                     em.set_thumbnail(url=self.user.avatar_url)
                     em.add_field(name="─────────────", value=f"I noticed you\'re attempting to send the staff a mod mail but have no roles, if this is your issue __**PLEASE**__ make sure to review the message you recieved when you joined __along__ with reading over <#{CHANS['rules']}>! If this didn\'t help, please resend your original message!")
                     await self.safe_send_message(message.author, embed=em)
@@ -3604,7 +3618,7 @@ class R6Bot(discord.Client):
                 if not edit:
                     try:
                         if not(message.author.id in self.recent_modmail_replies and datetime.utcnow() - timedelta(minutes=30) < self.recent_modmail_replies[message.author.id]):
-                            em = discord.Embed(description=f"**{self.user.mention}**", colour=message.guild.me.color)
+                            em = discord.Embed(description=f"**{self.user.mention}**", colour=discord.utils.get(self.guilds, id=SERVERS['main']).me.color)
                             em.set_thumbnail(url=self.user.avatar_url)
                             em.add_field(name="─────────────", value=f"Thank you for your message! Our mod team will reply to you as soon as possible.")
                             await self.safe_send_message(message.author, embed=em)
@@ -3626,12 +3640,18 @@ class R6Bot(discord.Client):
                 else:
                     msg_attachments = ''
                     
+                
+                ban_roles = [role.name for role in message.author.roles if role.id in self.channel_bans]
+                msg_alert = ""
                 if message.author.id in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['ban']).members] and message.author.id not in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members]:
-                    msg_alert = '\n**__WARNING: USER IN BANNED SERVER__**'
-                elif message.author.id in self.serious_d_blacklist:
-                    msg_alert = '\n**__WARNING: USER IN SERIOUS DISCUSSION BLACKLIST__**'
+                    msg_alert += '\n**__WARNING: USER IN BANNED SERVER__**'
                 else:
-                    msg_alert = ''
+                    if message.author.id in self.serious_d_blacklist:
+                        msg_alert += '\n**__WARNING: USER IN SERIOUS DISCUSSION BLACKLIST__**'
+                    if ban_roles:
+                        msg_alert = f'\n**__WARNING: USER HAS THE FOLLOWING CHANNEL BANS "{", ".join([role_name[4:] for role_name in ban_roles])}"__**'
+                    if datetime.utcnow() - timedelta(hours=48) < message.author.created_at:
+                        msg_alert = f'\n**__WARNING: USER HAS ACCOUNT LESS THAN 48 HRS OLD__**'
                     
                 if edit:
                     msg_edit = 'EDITED MSG:\n'
@@ -3650,7 +3670,7 @@ class R6Bot(discord.Client):
                     mm_symbol = "new"
                     self.mod_mail_db[message.author.id] = {'answered': False,'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': None,'content': '{}\n~ATTACHMENT:{}'.format(msg_content, ', '.join([attachment.url for attachment in message.attachments]))}}}
                 
-                em = discord.Embed(description=f"**{message.author.mention} - {message.author.name}#{message.author.discriminator}**\n{msg_alert}", colour=message.author.top_role.color, timestamp=datetime.utcnow())
+                em = discord.Embed(description=f"**{message.author.mention} - {message.author.name}#{message.author.discriminator}**\n{msg_alert}", colour=message.author.color, timestamp=datetime.utcnow())
                 em.set_thumbnail(url=message.author.avatar_url)
                 em.set_footer(text=f"{message.author.id}")
                 newline = "\n"
@@ -3659,12 +3679,14 @@ class R6Bot(discord.Client):
                 else:
                     em.add_field(name="─────────────", value=f"{msg_edit+newline if msg_edit else ''}{msg_content}")
                 if msg_attachments:
-                    await self.safe_send_message(target_channel, embed=em, content='\n'.join([attachment.url for attachment in message.attachments]))    
+                    target_channel_msg = await self.safe_send_message(target_channel, embed=em, content='\n'.join([attachment.url for attachment in message.attachments]))    
                 else:
-                    await self.safe_send_message(target_channel, embed=em)    
+                    target_channel_msg = await self.safe_send_message(target_channel, embed=em)    
                 if target_channel and target_channel.category.id != target_category:
                     await self.safe_edit_channel(target_channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS[mm_symbol]}{target_channel.name[2:]}", sync_permissions=True)
-                    asyncio.ensure_future(self.transition_modmail_channels())            
+                    asyncio.ensure_future(self.transition_modmail_channels())
+                jump_embed = discord.Embed(colour=discord.Colour(0x36393F), description=f"[click to jump (if available)]({target_channel_msg.jump_url})") if target_channel_msg else None
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=f'**{msg_edit}From:** *{message.author.mention}({message.author.id})*:\n```{msg_content}```{msg_attachments}', embed=jump_embed)         
                 # write_json('modmaildb.json', self.mod_mail_db)
                 await self.backup_modmail_log(message.author.id)
                 return
@@ -3710,7 +3732,8 @@ class R6Bot(discord.Client):
                         em.add_field(name="─────────────", value=msg_to_send)
                         await self.safe_send_message(message.author, embed=em)
                         if target_channel:
-                            await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending some dumb shit in teams that was shorter than 60 chars or had a mention'))
+                            await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending some dumb shit in teams that was shorter than 60 chars or had a mention'))
+                        await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending some dumb shit in teams that was shorter than 60 chars or had a mention'))
 
                     await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, discrim=message.author.discriminator ,id=message.author.id, action='Deleted Message', reason='Sent some dumb shit in teams that was shorter than 60 chars or had a mention.', optional_content='Message sent in {}: `{}`\n'.format(message.channel.mention, message.clean_content)))
         
@@ -3738,7 +3761,8 @@ class R6Bot(discord.Client):
                         em.add_field(name="─────────────", value=msg_to_send)
                         await self.safe_send_message(message.author, embed=em)
                         if target_channel:
-                            await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for mentioning someone in lf scrims'))
+                            await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for mentioning someone in lf scrims'))
+                        await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for mentioning someone in lf scrims'))
                     await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, discrim=message.author.discriminator ,id=message.author.id, action='Deleted Message', reason='mentioned someone in lf scrims', optional_content='Message sent in {}: `{}`\n'.format(message.channel.mention, message.clean_content)))
         
         elif message.channel.id in LFG_CHANS:
@@ -3766,7 +3790,8 @@ class R6Bot(discord.Client):
                         em.add_field(name="─────────────", value=msg_to_send)
                         await self.safe_send_message(message.author, embed=em)
                         if target_channel:
-                            await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending some dumb shit in lfg that was longer than 200 chars'))
+                            await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending some dumb shit in lfg that was longer than 200 chars'))
+                        await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending some dumb shit in lfg that was longer than 200 chars'))
                     await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, discrim=message.author.discriminator ,id=message.author.id, action='Deleted Message', reason='Sent some dumb shit in lfg that was longer than 200 chars', optional_content='Message sent in {}: `{}`\n'.format(message.channel.mention, message.clean_content)))
                         
         if not message.author.bot and not [role for role in message.author.roles if role.id  in [ROLES['staff'], ROLES['bots']]] and message.channel.id not in [CHANS['star']]:
@@ -3838,7 +3863,8 @@ class R6Bot(discord.Client):
                         await self.safe_send_message(chan, content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
                 else:
                     if target_channel:
-                        await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
+                        await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
+                    await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
             elif len(message.mentions) > 2 and message.author.id in self.mention_spam_watch and not edit:
                 if datetime.utcnow() - timedelta(minutes=30) < self.mention_spam_watch[message.author.id]:
                     print(f"2x Spam Watch broken by {message.author.name}, muting")
@@ -3863,7 +3889,8 @@ class R6Bot(discord.Client):
                             await self.safe_send_message(chan, content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
                     else:
                         if target_channel:
-                            await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
+                            await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
+                        await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
                 else:
                     self.mention_spam_watch[message.author.id] = datetime.utcnow()
             elif len(message.mentions) > 2:
@@ -3906,7 +3933,8 @@ class R6Bot(discord.Client):
                                 em.add_field(name="─────────────", value=msg_to_send)
                                 await self.safe_send_message(message.author, embed=em)
                                 if target_channel:
-                                    await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending discord invites'))
+                                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending discord invites'))
+                                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending discord invites'))
                             await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, action='Deleted discord invite', discrim=message.author.discriminator ,id=message.author.id, reason='Sent a nonwhitelisted invite url ({} : {})'.format(item, invite.guild.id), optional_content='Message sent in {}: `{}`\n'.format(message.channel.mention, message.clean_content)))
                             return
             except:
