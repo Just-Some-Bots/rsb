@@ -98,6 +98,7 @@ class R6Bot(discord.Client):
         self.extra_drama_kwords = load_json('dramakwords.json')
         self.guild_whitelist = load_json('server_whitelist.json')
         self.twitch_watch_list = load_json('twitchwatchlist.json')
+        self.proleague_streams = load_json('proleaguestreams.json')
         self.twitter_watch_list = load_json('twitterwatchlist.json')
         self.muted_dict = {int(key): value for key, value in load_json('muted.json').items()}
         self.channel_bans = {int(key): {int(k): v for k, v in value.items()} if value else value for key, value in load_json('channel_banned.json').items()}
@@ -477,7 +478,7 @@ class R6Bot(discord.Client):
                             except json.decoder.JSONDecodeError:
                                 pass
                         if resp and "stream" in resp and resp["stream"] and resp["stream"]["game"] == 'Tom Clancy\'s Rainbow Six: Siege':
-                            if streamer in ['rainbow6']:
+                            if streamer in self.proleague_streams:
                                 target_channel = 414812315729526784
                             else:
                                 target_channel = CHANS['twitch']
@@ -506,11 +507,17 @@ class R6Bot(discord.Client):
                                     await self.safe_edit_message(self.twitch_is_live[streamer]['message'], embed=self.twitch_is_live[streamer]['embedded_object'])
                                     
                         elif streamer in self.twitch_is_live and not self.twitch_is_live[streamer]['offline_cooldown']:
-                            if self.twitch_debug: print('User %s detected offline, marking as such' % streamer)
-                            self.twitch_is_live[streamer]['embedded_object'].color = discord.Colour(0x979c9f)
-                            self.twitch_is_live[streamer]['embedded_object'].set_field_at(0, name="Status", value="OFFLINE", inline=True)
-                            self.twitch_is_live[streamer]['offline_cooldown'] = True
-                            await self.safe_edit_message(self.twitch_is_live[streamer]['message'], embed=self.twitch_is_live[streamer]['embedded_object'])
+                            if streamer in self.proleague_streams:
+                                if self.twitch_debug: print('User %s detected offline, marking as such' % streamer)
+                                await self.safe_delete_message(self.twitch_is_live[streamer]['message'])
+                                self.twitch_is_live[streamer]['message'] = None
+                                self.twitch_is_live[streamer]['offline_cooldown'] = True
+                            else:
+                                if self.twitch_debug: print('User %s detected offline, marking as such' % streamer)
+                                self.twitch_is_live[streamer]['embedded_object'].color = discord.Colour(0x979c9f)
+                                self.twitch_is_live[streamer]['embedded_object'].set_field_at(0, name="Status", value="OFFLINE", inline=True)
+                                self.twitch_is_live[streamer]['offline_cooldown'] = True
+                                await self.safe_edit_message(self.twitch_is_live[streamer]['message'], embed=self.twitch_is_live[streamer]['embedded_object'])
                 except RuntimeError:
                     return
                 except:
@@ -543,7 +550,9 @@ class R6Bot(discord.Client):
                 try:
                     modmail_logs[int(file[:-5])] = {key: value for key, value in load_json(fileroute).items()}
                 except:
-                    traceback.print_exc()
+                    # traceback.print_exc()
+                    print(f"Error loading {fileroute}... Removing.")
+                    os.remove(fileroute)
                     pass
         return modmail_logs
         
@@ -857,7 +866,7 @@ class R6Bot(discord.Client):
         await asyncio.sleep(after)
         await self.safe_delete_message(message)
 
-    async def safe_send_message(self, dest, *, content=None, tts=False, embed=None, file=None, files=None, expire_in=None, nonce=None, quiet=None):
+    async def safe_send_message(self, dest, *, content=None, tts=False, embed=None, file=None, files=None, expire_in=None, nonce=None, quiet=None, self_called=False):
         msg = None
         try:
             time_before = timer()
@@ -872,12 +881,22 @@ class R6Bot(discord.Client):
             if not quiet:
                 print("Error: Cannot send message to %s, no permission" % dest.name)
         except discord.NotFound:
+            if not self_called and hasattr(dest, "category") and hasattr(dest.category, "id") and dest.category.id in CATS.values() and dest.id in [value.id for value in self.cached_modmail_channels.values() if hasattr(value, "id")]:
+                if dest.topic:
+                    del self.cached_modmail_channels[int(dest.topic)]
+                    new_chan = await self.get_or_create_modmail_channel(dest.topic , creation_state="new")
+                    print("Handled 404 in Modmail")
+                    msg = await self.safe_send_message(dest, content=content, tts=tts, embed=embed, file=file, files=files, expire_in=expire_in, nonce=nonce, quiet=quiet, self_called=True)
+            else:
+                print(f"Bugged Modmail Cache: {key: value for key, value in self.cached_modmail_channels.items() if not value}")
             if not quiet:
                 print("Warning: Cannot send message to %s, invalid channel?" % dest.name)
         finally:
             if msg: return msg
 
     async def safe_delete_message(self, message, *, quiet=False):
+        if not callable(getattr(message, "delete", None)):
+            return None
         try:
             return await message.delete()
 
@@ -916,7 +935,7 @@ class R6Bot(discord.Client):
         try:
             chan = await channel.edit(**options)
         except discord.NotFound:
-            if hasattr(channel, "category") and hasattr(channel.category, "id") and channel.category.id in CATS.values() and channel.id in [value.id for value in self.cached_modmail_channels.values()]:
+            if hasattr(channel, "category") and hasattr(channel.category, "id") and channel.category.id in CATS.values() and channel.id in [value.id for value in self.cached_modmail_channels.values() if value and hasattr(value, "id")]:
                 if channel.topic:
                     del self.cached_modmail_channels[int(channel.topic)]
                     new_chan = await self.get_or_create_modmail_channel(channel.topic , creation_state="new")
@@ -992,6 +1011,20 @@ class R6Bot(discord.Client):
             write_json('server_whitelist.json', self.guild_whitelist)
             
             return Response(':thumbsup:', reply=True)
+ 
+    @mods_only
+    async def cmd_toggleproleague(self, author, twitch_channel):
+        """
+        Usage: {command_prefix}toggleproleague twitch_channel
+        Either adds or removes a flag that displays a channel in the twitch watch list in a different text channel
+        """
+        if twitch_channel not in self.proleague_streams:
+            self.proleague_streams.append(twitch_channel)
+        else:
+            self.proleague_streams = [item for item in self.proleague_streams if item != twitch_channel]
+            
+        write_json('proleaguestreams.json', self.proleague_streams)
+        return Response(':thumbsup:', reply=True)
         
     @mods_only
     async def cmd_restart(self, channel, author):
@@ -1157,27 +1190,72 @@ class R6Bot(discord.Client):
                         
             elif switch == 'list':
                 try:
-                    this = sorted(list(self.tags.keys()), key=str.lower)
-                    new_this = [this[0]]
-                    for elem in this[1:]:
-                        if len(new_this[-1]) + len(elem) < 70:
-                            new_this[-1] = new_this[-1] + ', ' + elem
+                    plain_sorted = sorted([tag for tag in list(self.tags.keys()) if not self.tags[tag][0] or "unrestricted_eval" in self.tags[tag][0].split()], key=str.lower)
+                    tag_list_lines = ["**__Regular Tags:__**", plain_sorted[0]]
+                    for elem in plain_sorted[1:]:
+                        if len(tag_list_lines[-1]) + len(elem) < 70:
+                            tag_list_lines[-1] = tag_list_lines[-1] + ', ' + elem
                         else:
-                            new_this.append(elem)
-                    final = clean_bad_pings('%s' % '\n'.join(new_this))
-                    if len(final) > 1800:
-                        final_this = [new_this[0]]
-                        for elem in new_this[1:]:
-                            if len(final_this[-1]) + len(elem) < 1800:
-                                final_this[-1] = final_this[-1] + '\n' + elem
+                            tag_list_lines.append(elem)
+
+                    unique_tag_flags = {}
+                    is_staff = any([True for role in author.roles if role.id  in [ROLES['staff'], ROLES['tagmaster']]])
+                    for tag in [tag for tag, value in self.tags.items() if value[0] and "unrestricted_eval" not in value[0].split()]:
+                        tag_flag_list = []
+                        channel_list = []
+                        should_ignore = False
+
+                        for tag_flag in self.tags[tag][0].split():
+                            if (not is_staff and tag_flag in ["restrict", "eval"]) or should_ignore:
+                                should_ignore = True
+                                continue
+                            if tag_flag.isdigit() and guild.get_channel(int(tag_flag)):
+                                chan = guild.get_channel(int(tag_flag))
+                                if isinstance(chan, discord.CategoryChannel):
+                                    channel_list = channel_list + [cat_chan for cat_chan in chan.text_channels if cat_chan.permissions_for(author).read_messages]
+                                else:
+                                    if chan.permissions_for(author).read_messages:
+                                        channel_list.append(chan)
                             else:
-                                final_this.append(elem)
-                        for x in final_this:
+                                tag_flag_list.append(tag_flag)
+
+                        if should_ignore or (not channel_list and not tag_flag_list):
+                            continue
+
+                        key = f"{''.join(sorted([str(chan.id) for chan in channel_list]))}{''.join(sorted(tag_flag_list))}"
+                        if key in unique_tag_flags:
+                            unique_tag_flags[key].append((tag, tag_flag_list, channel_list))
+                        else:
+                            unique_tag_flags[key] = [(tag, tag_flag_list, channel_list)]
+                    if unique_tag_flags:
+                        tag_list_lines.append("**__Special Tags:__**")
+                        for tag_list in unique_tag_flags.values():
+                            if tag_list[0][1]:
+                                tag_list_lines.append(f"**Tag Flags:** `{', '.join(tag_list[0][1])}`")
+                            if tag_list[0][2]:
+                                tag_list_lines.append(f"**In Channels:** {', '.join([chan.mention for chan in tag_list[0][2]])}")
+                            special_sorted = sorted([tag[0] for tag in tag_list], key=str.lower)
+                            tag_list_lines.append(special_sorted[0])
+                            for elem in special_sorted[1:]:
+                                if len(tag_list_lines[-1]) + len(elem) < 70:
+                                    tag_list_lines[-1] = tag_list_lines[-1] + ', ' + elem
+                                else:
+                                    tag_list_lines.append(elem)
+
+                    tag_sorted_msg = clean_bad_pings('%s' % '\n'.join(tag_list_lines))
+                    if len(tag_sorted_msg) > 1800:
+                        tag_sorted_msgs = [tag_list_lines[0]]
+                        for elem in tag_list_lines[1:]:
+                            if len(tag_sorted_msgs[-1]) + len(elem) < 1800:
+                                tag_sorted_msgs[-1] = tag_sorted_msgs[-1] + '\n' + elem
+                            else:
+                                tag_sorted_msgs.append(elem)
+                        for x in tag_sorted_msgs:
                             await self.safe_send_message(author, content=x)
                     else:
-                        await self.safe_send_message(author, content=final)
+                        await self.safe_send_message(author, content=tag_sorted_msg)
                 except Exception as e:
-                    print(e)
+                    traceback.print_exc()
             elif switch == 'blacklist':
                 if [role for role in author.roles if role.id  in [ROLES['staff']]]:
                     for user in mentions:
@@ -1737,8 +1815,17 @@ class R6Bot(discord.Client):
         except:
             raise CommandError('This channel\'s topic was fucked with, please put JUST the ID of the user to modmail in the topic and ping rhino')
         member = discord.utils.get(guild.members, id=auth_id)
+        
         if not member:
             member = discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['ban']).members, id=auth_id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(auth_id)
+                except:
+                    try:
+                        member = await discord.utils.get(self.guilds, id=SERVERS['ban']).fetch_member(auth_id)
+                    except:
+                        pass
         if member:
             if raw_leftover_args[0] == 'anon':
                 msg_to_send = ' '.join(raw_leftover_args[1:])
@@ -2154,7 +2241,12 @@ class R6Bot(discord.Client):
         for message_block in search_in_actions:
             for msg in message_block:
                 if str(user.id) in msg["content"] and msg["id"] not in history_items:
-                    history_items[msg["id"]] = {"content": cleanup_blocks(msg["content"]), "actor": discord.utils.get(guild.members, id=int(msg["author"]["id"]))}
+                    formatted_content = cleanup_blocks(msg["content"]).strip().splitlines()
+                    
+                    if len(formatted_content) == 3 and str(user.id) not in formatted_content[1]:
+                        continue
+                        
+                    history_items[msg["id"]] = {"content": formatted_content, "actor": discord.utils.get(guild.members, id=int(msg["author"]["id"]))}
         current_index = 0
         step = 10
         current_msg = None
@@ -2167,7 +2259,7 @@ class R6Bot(discord.Client):
 
             od = collections.OrderedDict(islice(message_dict.items(),current_index, current_index+step))
             for ts_id, msg_block in od.items():
-                fmt_msg = msg_block["content"].strip().splitlines()
+                fmt_msg = msg_block["content"]
                 actor = msg_block["actor"]
                 if not actor:
                     return CommandError("something is broke, poke rhino about it: actor not found in request via user bot")
@@ -2180,6 +2272,7 @@ class R6Bot(discord.Client):
                             actor = msg_block["actor"]
                 acting_user_message = f"by {actor.mention}" if not actor.bot else f"by {actor.mention}(automated action or reason not specified)"
                 quick_switch_dict['embed'].add_field(name=f'*{snowflake_time(ts_id).strftime("%H:%M %d.%m.%y")}*', value=f'"{fmt_msg[0][7:] if not match else fmt_msg[0][7:match.start(0)]}" {acting_user_message}', inline=False)
+                
             if not current_msg:
                 current_msg = await self.safe_send_message(channel, embed=quick_switch_dict['embed'])
             else:
@@ -2595,17 +2688,18 @@ class R6Bot(discord.Client):
         except discord.HTTPException as e:
             raise CommandError(f'Error: {e} (try a smaller search?)')
 
-        spammers = collections.Counter(m.author.display_name for m in deleted)
-        await self.log_action(user=author, message=deleted, action='bulk_message_delete')
-        deleted = len(deleted)
-        messages = [f'{deleted} message{" was" if deleted == 1 else "s were"} removed.']
         if deleted:
+            spammers = collections.Counter(m.author.display_name for m in deleted)
+            await self.log_action(user=author, message=deleted, action='bulk_message_delete')
+            deleted = len(deleted)
+            messages = [f'{deleted} message{" was" if deleted == 1 else "s were"} removed.']
             messages.append('')
             spammers = sorted(spammers.items(), key=lambda t: t[1], reverse=True)
             messages.extend(f'**{name}**: {count}' for name, count in spammers)
 
-        to_send = '\n'.join(messages)
-
+            to_send = '\n'.join(messages)
+        else:
+            to_send = f'No messages found by query: `{clean_string(message.content[6:]).strip()}`'
         if len(to_send) > 1990:
             return Response(f'Successfully removed {clean_string(deleted)} messages.', delete_after=10, delete_invoking=True) 
         else:
@@ -2640,7 +2734,12 @@ class R6Bot(discord.Client):
                 pass
                 
         if not user:
-            user = author
+            try:
+                user = await converter.convert(message, self, channel.topic)
+            except:
+                pass
+            if not user:
+                user = author
             
         member = discord.utils.get(guild.members, id=user.id)
         try:
@@ -2700,7 +2799,7 @@ class R6Bot(discord.Client):
             em.add_field(name='Messages in Server:', value='{}'.format(member_search["total_results"]), inline=False)
             em.add_field(name='Voice Channel Activity:', value=f'{vc_string}', inline=False)
             try:
-                bans = await guild.get_ban(user)
+                bans = await guild.fetch_ban(user)
                 reason = bans.reason
                 if not reason:
                     history_items = []
@@ -2864,7 +2963,7 @@ class R6Bot(discord.Client):
             # except:
                 # pass
             try:
-                if  ROLES['staff'] in [role.id for role in user.roles]: return Response('Error: User is Staff!')
+                if  ROLES['staff'] in [role.id for role in discord.utils.get(guild.members, id=user.id).roles]: return Response('Error: User is Staff!')
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Softbanned user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
                 self.last_actions[author.id] = action_msg
                 await self.http.ban(user.id, guild.id, ban_time)
@@ -3325,7 +3424,7 @@ class R6Bot(discord.Client):
             try:
                 self.serious_d_blacklist = list(set(self.serious_d_blacklist))
                 
-                if not [role for role in before.roles if role.id  in [ROLES['muted']]] and [role for role in after.roles if role.id  in [ROLES['muted']]]:
+                if not [role for role in before.roles if role.id  in [ROLES['muted']]] and [role for role in after.roles if role.id  in [ROLES['muted']]] and before.id not in self.muted_dict:
                     await asyncio.sleep(5)
                     if before.id not in self.muted_dict:
                         self.muted_dict[before.id] = None
@@ -3348,7 +3447,7 @@ class R6Bot(discord.Client):
                     write_json('sd_bl.json', self.serious_d_blacklist)
                     
                 for role_id in self.channel_bans:
-                    if not [role for role in before.roles if role.id == role_id] and [role for role in after.roles if role.id == role_id]:
+                    if not [role for role in before.roles if role.id == role_id] and [role for role in after.roles if role.id == role_id] and before.id not in self.channel_bans[role_id]:
                         self.channel_bans[role_id][before.id] = None
                         print('user {} now channel banned'.format(before.name))
                         write_json('channel_banned.json', self.channel_bans)
