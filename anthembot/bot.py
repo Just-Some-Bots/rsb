@@ -1469,27 +1469,72 @@ class AnthemBot(discord.Client):
                         
             elif switch == 'list':
                 try:
-                    this = sorted(list(self.tags.keys()), key=str.lower)
-                    new_this = [this[0]]
-                    for elem in this[1:]:
-                        if len(new_this[-1]) + len(elem) < 70:
-                            new_this[-1] = new_this[-1] + ', ' + elem
+                    plain_sorted = sorted([tag for tag in list(self.tags.keys()) if not self.tags[tag][0] or "unrestricted_eval" in self.tags[tag][0].split()], key=str.lower)
+                    tag_list_lines = ["**__Regular Tags:__**", plain_sorted[0]]
+                    for elem in plain_sorted[1:]:
+                        if len(tag_list_lines[-1]) + len(elem) < 70:
+                            tag_list_lines[-1] = tag_list_lines[-1] + ', ' + elem
                         else:
-                            new_this.append(elem)
-                    final = clean_bad_pings('%s' % '\n'.join(new_this))
-                    if len(final) > 1800:
-                        final_this = [new_this[0]]
-                        for elem in new_this[1:]:
-                            if len(final_this[-1]) + len(elem) < 1800:
-                                final_this[-1] = final_this[-1] + '\n' + elem
+                            tag_list_lines.append(elem)
+
+                    unique_tag_flags = {}
+                    is_staff = any([True for role in author.roles if role.id  in [ROLES['staff'], ROLES['tagmaster']]])
+                    for tag in [tag for tag, value in self.tags.items() if value[0] and "unrestricted_eval" not in value[0].split()]:
+                        tag_flag_list = []
+                        channel_list = []
+                        should_ignore = False
+
+                        for tag_flag in self.tags[tag][0].split():
+                            if (not is_staff and tag_flag in ["restrict", "eval"]) or should_ignore:
+                                should_ignore = True
+                                continue
+                            if tag_flag.isdigit() and guild.get_channel(int(tag_flag)):
+                                chan = guild.get_channel(int(tag_flag))
+                                if isinstance(chan, discord.CategoryChannel):
+                                    channel_list = channel_list + [cat_chan for cat_chan in chan.text_channels if cat_chan.permissions_for(author).read_messages]
+                                else:
+                                    if chan.permissions_for(author).read_messages:
+                                        channel_list.append(chan)
                             else:
-                                final_this.append(elem)
-                        for x in final_this:
+                                tag_flag_list.append(tag_flag)
+
+                        if should_ignore or (not channel_list and not tag_flag_list):
+                            continue
+
+                        key = f"{''.join(sorted([str(chan.id) for chan in channel_list]))}{''.join(sorted(tag_flag_list))}"
+                        if key in unique_tag_flags:
+                            unique_tag_flags[key].append((tag, tag_flag_list, channel_list))
+                        else:
+                            unique_tag_flags[key] = [(tag, tag_flag_list, channel_list)]
+                    if unique_tag_flags:
+                        tag_list_lines.append("**__Special Tags:__**")
+                        for tag_list in unique_tag_flags.values():
+                            if tag_list[0][1]:
+                                tag_list_lines.append(f"**Tag Flags:** `{', '.join(tag_list[0][1])}`")
+                            if tag_list[0][2]:
+                                tag_list_lines.append(f"**In Channels:** {', '.join([chan.mention for chan in tag_list[0][2]])}")
+                            special_sorted = sorted([tag[0] for tag in tag_list], key=str.lower)
+                            tag_list_lines.append(special_sorted[0])
+                            for elem in special_sorted[1:]:
+                                if len(tag_list_lines[-1]) + len(elem) < 70:
+                                    tag_list_lines[-1] = tag_list_lines[-1] + ', ' + elem
+                                else:
+                                    tag_list_lines.append(elem)
+
+                    tag_sorted_msg = clean_bad_pings('%s' % '\n'.join(tag_list_lines))
+                    if len(tag_sorted_msg) > 1800:
+                        tag_sorted_msgs = [tag_list_lines[0]]
+                        for elem in tag_list_lines[1:]:
+                            if len(tag_sorted_msgs[-1]) + len(elem) < 1800:
+                                tag_sorted_msgs[-1] = tag_sorted_msgs[-1] + '\n' + elem
+                            else:
+                                tag_sorted_msgs.append(elem)
+                        for x in tag_sorted_msgs:
                             await self.safe_send_message(author, content=x)
                     else:
-                        await self.safe_send_message(author, content=final)
+                        await self.safe_send_message(author, content=tag_sorted_msg)
                 except Exception as e:
-                    print(e)
+                    traceback.print_exc()
             elif switch == 'blacklist':
                 if [role for role in author.roles if role.id  in [ROLES['staff']]]:
                     for user in mentions:
