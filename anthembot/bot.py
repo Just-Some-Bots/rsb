@@ -18,7 +18,7 @@ import subprocess
 import collections
 
 from functools import wraps
-from itertools import islice
+from itertools import islice, chain
 from io import BytesIO, StringIO
 from TwitterAPI import TwitterAPI
 from contextlib import redirect_stdout
@@ -38,11 +38,25 @@ from .utils import doc_string, clean_string, write_json, load_json, clean_bad_pi
 # handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
 # logger.addHandler(handler)
 
+def text_channels_alt(self):
+    """List[:class:`TextChannel`]: Returns the text channels that are under this category."""
+    ret = [c for c in self.guild.channels
+        if c.category_id == self.id
+        and isinstance(c, discord.TextChannel)]
+    for c in ret:
+        if c.last_message_id == None:
+            c.last_message_id = 1
+    ret.sort(key=lambda c: (c.last_message_id))
+    return ret
+        
+setattr(discord.CategoryChannel, 'text_channels_alt', property(text_channels_alt))
+
 class Response(object):
-    def __init__(self, content, reply=False, delete_after=0, delete_invoking=False):
+    def __init__(self, content, reply=False, delete_after=0, embed=None, delete_invoking=False):
         self.content = content
         self.reply = reply
         self.delete_invoking = delete_invoking
+        self.embed = embed
         self.delete_after = delete_after
 
 class Arguments(argparse.ArgumentParser):
@@ -66,16 +80,17 @@ class AnthemBot(discord.Client):
         # self.serious_d_blacklist = load_json('sd_bl.json')
         self.extra_drama_kwords = load_json('dramakwords.json')
         self.guild_whitelist = load_json('server_whitelist.json')
-        self.s95_user_list = [] #load_json('/home/bots/danbot/s95_ids.json')
+        # self.s95_user_list = [] #load_json('/home/bots/danbot/s95_ids.json')
         self.twitch_watch_list = load_json('twitchwatchlist.json')
         self.twitter_watch_list = load_json('twitterwatchlist.json')
         self.muted_dict = {int(key): value for key, value in load_json('muted.json').items()}
-        self.mod_mail_db = {int(key): value for key, value in load_json('modmaildb.json').items()}
+        self.mod_mail_db = {}
         self.channel_bans = {int(key): {int(k): v for k, v in value.items()} if value else value for key, value in load_json('channel_banned.json').items()}
         self.cban_role_aliases = {key: int(value) for key, value in load_json('cbanrolealiases.json').items()}
         
         # Instance Storage (nothing saved between bot
         self.mention_spam_watch = {}
+        self.cached_modmail_channels = {}
         self.ban_list = {}
         self.last_actions = {}
         self.vc_tracker = {}
@@ -87,6 +102,7 @@ class AnthemBot(discord.Client):
         self.slow_mode_dict = {}
         self.watched_messages = {}
         self.anti_stupid_modmail_list = []
+        self.anti_spam_modmail_list = {}
         REGEX['drama'] = REGEX['drama_base'].format('|'.join(self.extra_drama_kwords))
         
         # Variables used as storage of information between commands
@@ -108,7 +124,9 @@ class AnthemBot(discord.Client):
         self.slow_mode_debug = False
         self.ready_check = False
         self.vc_ready = False
+        self.new_modmail_debug = False
         self.use_reactions = True
+        self.is_sorting_channels = False
         
         # I separated these out from Constants because I wanted to ensure they could be easily found and changed.
         self.intro_msg = "Welcome to the /r/AnthemTheGame Discord server, make sure to read <#{rules}>! You will need a role in order to chat and join voice channels. To obtain a role *(take note of the exclamation mark prefix)*:```!pc\n!xbox\n!ps4``` If you happen to run a Youtube or Twitch  channel w/ over 15k followers or work at Ubisoft, dm me (the bot) about it and the admins will get you set up with a fancy role!".format(rules=CHANS['rules'])
@@ -117,9 +135,8 @@ class AnthemBot(discord.Client):
         #scheduler garbage
         self.scheduler = AsyncIOScheduler()
         self.scheduler.add_job(self.backup_messages_log, 'cron', id='backup_msgs',  minute='*/10')
-        self.scheduler.add_job(self.load_ids, 'cron', id='load_ids',  second='*/5')
+        self.scheduler.add_job(self.backup_modmail_logs, 'cron', id='backup_modmail',  minute='*/10')
         self.scheduler.add_job(self.reorder_lfg_channels, 'cron', id='reorder_lfg',  second='*/45')
-        self.scheduler.add_job(self.backup_role_trackers, 'cron', id='backup_role_trackers',  minute='*/1')
         # self.scheduler.add_job(self.remind_for_roles, 'cron', id='remind_for_roles', day='*/3', hour='12')
         self.scheduler.start()
         
@@ -188,6 +205,11 @@ class AnthemBot(discord.Client):
                 if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.remove_roles(timed_role, atomic = True)
                 em = discord.Embed(colour=discord.Colour(0xFFD800), description=MUTED_MESSAGES['timed_over'].format(roles=CHANS['roleswap'], rules=CHANS['rules']))
                 await self.safe_send_message(user, embed=em)
+                target_channel = await self.get_or_create_modmail_channel(user.id, creation_state=None)
+                if target_channel:
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
+
                 await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
                 try:
                     await user.edit(mute=False)
@@ -224,12 +246,41 @@ class AnthemBot(discord.Client):
             except:
                 pass
             
-    async def backup_role_trackers(self):
-        write_json('muted.json', self.muted_dict)
-        write_json('channel_banned.json', self.channel_bans)
+    async def backup_modmail_log(self, user_id):
+        if user_id in self.mod_mail_db:
+            try:
+                write_json('modmail_logs/%s.json' % str(user_id), self.mod_mail_db[user_id])
+            except:
+                pass
+    async def backup_modmail_logs(self):
+        for filename, contents in self.mod_mail_db.items():
+            try:
+                write_json('modmail_logs/%s.json' % str(filename), contents)
+            except:
+                pass
+                
+    async def backup_persistent_data(self):
+    
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        loop = asyncio.get_event_loop()
+        
+        def save_jsons():
+            write_json('channel_banned.json', self.channel_bans)
+            write_json('muted.json', self.muted_dict)
+            write_json('cbanrolealiases.json', self.cban_role_aliases)
+            write_json('server_whitelist.json', self.guild_whitelist)
+            write_json('tags.json', self.tags)
+            write_json('dramakwords.json', self.extra_drama_kwords)
+            write_json('twitchwatchlist.json', self.twitch_watch_list)
+            write_json('twitterwatchlist.json', self.twitter_watch_list)
+            write_json('sd_bl.json', self.serious_d_blacklist)
+            
+        future = loop.run_in_executor(executor, save_jsons)
+        await future
+
             
     async def reorder_lfg_channels(self):
-        for cat_id in CATS.values():
+        for cat_id in VC_CATS.values():
             try:
                 cat = self.get_channel(cat_id)
                 if not cat:
@@ -277,10 +328,10 @@ class AnthemBot(discord.Client):
                 await asyncio.sleep(1)
             for category_id in self.vc_tracker:
                 try:
-                    #if self.lfg_vc_debug: print(f"RESIZER: ----New Category {CATS_REV[category_id]}----")
+                    #if self.lfg_vc_debug: print(f"RESIZER: ----New Category {VC_CATS_REV[category_id]}----")
                 
                     baseline_channel_bucket = len(self.vc_tracker[category_id]) if len(self.vc_tracker[category_id]) < 6 else 6
-                    #if self.lfg_vc_debug: print(f"RESIZER: Cat {CATS_REV[category_id]} baseline chan bucket - {baseline_channel_bucket}")
+                    #if self.lfg_vc_debug: print(f"RESIZER: Cat {VC_CATS_REV[category_id]} baseline chan bucket - {baseline_channel_bucket}")
                     if baseline_channel_bucket < 6:
                         for _ in range(6-baseline_channel_bucket):
                             await self.queue_channel_for_creation(category_id)
@@ -288,7 +339,7 @@ class AnthemBot(discord.Client):
                             
                     empty_channel_bucket = len(self.vc_tracker[category_id]) - len([item for item in self.vc_tracker[category_id] if self.vc_tracker[category_id][item]["mem_len"] > 0])
                     empty_channel_bucket = empty_channel_bucket if empty_channel_bucket < 3 else 3
-                    #if self.lfg_vc_debug: print(f"RESIZER: Cat {CATS_REV[category_id]} empty chan bucket - {empty_channel_bucket}")
+                    #if self.lfg_vc_debug: print(f"RESIZER: Cat {VC_CATS_REV[category_id]} empty chan bucket - {empty_channel_bucket}")
                     if empty_channel_bucket < 3:
                         for _ in range(3-empty_channel_bucket): 
                             await self.queue_channel_for_creation(category_id)
@@ -329,7 +380,7 @@ class AnthemBot(discord.Client):
         chan_name = None
         num = 1
         while not chan_name:
-            trial_name = CAT_LFG_NAMING[CATS_REV[category_id]].format(num)
+            trial_name = VC_CAT_LFG_NAMING[VC_CATS_REV[category_id]].format(num)
             chan_name = trial_name if trial_name not in [chan.name for chan in cat.channels] else None
             num += 1
         chan = await discord.utils.get(self.guilds, id=SERVERS['main']).create_voice_channel(chan_name, category=cat)
@@ -513,9 +564,9 @@ class AnthemBot(discord.Client):
         def is_me(m):
             return m.author == self.user
         try:
-            await self.get_channel(CHANS['twitch']).purge(limit=100, check=is_me)
+            await self.get_channel(CHANS['cc']).purge(limit=100, check=is_me)
         except:
-            async for entry in self.get_channel(CHANS['twitch']).history(limit=10000):
+            async for entry in self.get_channel(CHANS['cc']).history(limit=10000):
                 if entry.author == self.user:
                     await self.safe_delete_message(entry)
                     await asyncio.sleep(0.21)
@@ -534,7 +585,7 @@ class AnthemBot(discord.Client):
                             # if streamer in ['rainbow6']:
                                 # target_channel = 414812315729526784
                             # else:
-                            target_channel = CHANS['twitch']
+                            target_channel = CHANS['cc']
                             if streamer not in self.twitch_is_live:
                                 if self.twitch_debug: print('Creating new embed for user %s' % streamer)
                                 self.twitch_is_live[streamer] = {'detected_start': datetime.utcnow(),
@@ -587,6 +638,23 @@ class AnthemBot(discord.Client):
                 if datetime.utcnow() - timedelta(days=7) < snowflake_time(message_id):
                     final_dict[chan_id] = {message_id: fields}
         return final_dict
+
+    def load_modmail_logs(self):
+        modmail_logs = {}
+        for root, dirs, files in os.walk('modmail_logs', topdown=False):
+            for file in files:
+                fileroute = os.path.join(root, file)
+                try:
+                    modmail_logs[int(file[:-5])] = {key: value for key, value in load_json(fileroute).items()}
+                except:
+                    traceback.print_exc()
+                    pass
+        return modmail_logs
+        
+    async def transition_modmail_logs(self):
+        self.mod_mail_db = {int(key): value for key, value in load_json('modmaildb.json').items()}
+        await self.backup_modmail_logs()
+        return "done!"
         
     async def do_search(self, guild_id, **kwargs):
         search_args = {}
@@ -619,9 +687,148 @@ class AnthemBot(discord.Client):
                                mutual_guilds=mutual_guilds,
                                user=discord.User(data=user, state=state),
                                connected_accounts=data['connected_accounts'])
-    async def load_ids(self):
-        await asyncio.sleep(1)
-        self.s95_user_list = [] #load_json('/home/bots/danbot/s95_ids.json')
+    # async def load_ids(self):
+        # await asyncio.sleep(1)
+        # self.s95_user_list = [] #load_json('/home/bots/danbot/s95_ids.json')
+   
+    async def get_or_create_modmail_channel(self, user_id, creation_state='new'):
+        try:
+            user_id = int(user_id)
+        except:
+            print(f"{user_id} was not able to be made int")
+            
+        # use a cached channel map to speed up calls between boots
+        if user_id in self.cached_modmail_channels:
+            if self.cached_modmail_channels[user_id]:
+                return self.cached_modmail_channels[user_id]
+            # relating to the issue mentioned below, I needed a way to make the bot wait for that original creation to happen rather than ditching the request.
+            count = 0
+            while not self.cached_modmail_channels[user_id]:
+                await asyncio.sleep(2)
+                
+                # we need a way to make sure we don't have an issue where something is just filling the event loop with sleeps.
+                if count > 30:
+                    raise CommandError("Get or Create slept for way too long")
+                else:
+                    count += 1
+            #return the newly created channel
+            return self.cached_modmail_channels[user_id]
+            
+            
+        # we store the user id in the channels topic so this should let us fetch it if it exists, regardless of category
+        for category_id in MM_CATS.values():
+            category = discord.utils.get(self.get_all_channels(), id=category_id)
+            for channel in category.channels:
+                if str(user_id) in channel.topic:
+                    self.cached_modmail_channels[user_id] = channel
+                    return channel
+        # I named this function get_or_create but maaan sometimes I dont wanna create, I just wanna get. I'm gonna support that now. Sue me.
+        if creation_state == None:
+            return None
+        
+        # I kept getting an error related to multiple messages sent in succession while a new channel was being created. This caused the bot to make multiple
+        self.cached_modmail_channels[user_id] = None
+        
+        # the channel must not exist or someone fucked it up and removed the userid from the topic, therefore make one we can actually use
+        # we want to enable creation of channels in any category in any state so we swap off the different states here
+        category = discord.utils.get(self.get_all_channels(), id=MM_CATS[f"mm{creation_state}"])
+        user = discord.utils.get(category.guild.members, id=user_id)
+        if not user:
+            user = discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['ban']).members, id=user_id)
+            if not user:
+                user = await self.fetch_user(user_id)
+                
+        symbol = MODMAIL_SYMBOLS["new"]
+        if user_id in self.mod_mail_db:
+            if any([message["modreply"] for message in self.mod_mail_db[user_id]["messages"].values()]):
+                symbol = MODMAIL_SYMBOLS["reply"]
+                most_recent_timestamp = max(self.mod_mail_db[user_id]["messages"].keys())
+                # I thought this was a good idea and realized it wasn't but I might change my mind
+                # if datetime.utcnow() - timedelta(days=1) < datetime.fromtimestamp(most_recent_timestamp):
+                    # symbol = MODMAIL_SYMBOLS["deletion"]
+                if self.mod_mail_db[user_id]["messages"][most_recent_timestamp]["modreply"]:
+                    symbol = MODMAIL_SYMBOLS["wfr"]
+        
+        channel = await category.guild.create_text_channel(f"⦗{symbol}⦘{user.name}#{user.discriminator}", category=category, topic=str(user_id))
+        asyncio.ensure_future(self.transition_modmail_channels())
+        await self.safe_edit_channel(channel, sync_permissions=True)
+        if user_id in self.mod_mail_db:
+            await self.populate_modmail_channel(user, channel)
+        self.cached_modmail_channels[user_id] = channel
+        return channel
+        
+    async def transition_modmail_channels(self):
+        await self.wait_until_really_ready()
+        if self.new_modmail_debug: print('attempting to transition modmail channels')
+        if self.is_sorting_channels:
+            if self.new_modmail_debug: print('already sorting, skipping...')
+            return
+        self.is_sorting_channels = True
+        modmail_category_cleared = {category_id: False for category_id in MM_CATS.values()}
+        if self.new_modmail_debug: print('starting loop')
+        try:
+            while any(value == False for value in modmail_category_cleared.values()):
+                if self.new_modmail_debug: print(f"current values:\n{modmail_category_cleared}")
+                for category_id in list(reversed(MM_CAT_TRANSITION_ORDER)):
+                    category = discord.utils.get(self.get_all_channels(), id=category_id)
+                    if self.new_modmail_debug: print(f"On Cat ID {category_id} Name {category.name}")
+                    channels = category.text_channels_alt
+                    if len(channels) > 45:
+                        if self.new_modmail_debug: print(f"More than 45 channels, currently at {len(channels)}")
+                        transition_category = None
+                        if MM_CAT_TRANSITION[category_id] != "delete":
+                            transition_category = discord.utils.get(self.get_all_channels(), id=MM_CAT_TRANSITION[category_id])
+                            if self.new_modmail_debug: print(f"has transition category, id is {transition_category.id} name {transition_category.name}")
+                        try:
+                            while len(channels) > 45:
+                                channel = channels.pop(0)
+                                if self.new_modmail_debug: print(f"attempting to move channel id {channel.id} name {channel.name}")
+                                if transition_category:
+                                    if self.new_modmail_debug: print(f"it has a transition category")
+                                    await self.safe_edit_channel(channel, category=transition_category, sync_permissions=True)
+                                else:
+                                    if self.new_modmail_debug: print(f"its being deleted")
+                                    await channel.delete()
+                                if self.new_modmail_debug: print(f"sleeping between movements")
+                                await asyncio.sleep(.5)
+                        except:
+                            traceback.print_exc()
+                            return
+                    else:
+                        if self.new_modmail_debug: print(f"modmail category cleared!")
+                        modmail_category_cleared[category_id] = True
+                    if self.new_modmail_debug: print(f"sleeping between categories")
+                    await asyncio.sleep(.5)
+        except:
+            traceback.print_exc()
+            pass
+        finally:
+            self.is_sorting_channels = False
+                    
+    async def populate_modmail_channel(self, user, channel, n_of_messages=20):
+        # we want to ensure theres a relavent history so we gotta do some hacky shit
+        cached_modreply_users = {}
+        messages = collections.OrderedDict(sorted(self.mod_mail_db[user.id]['messages'].items(), reverse=True))
+        messages = collections.OrderedDict(reversed(list(islice(messages.items(), 0, n_of_messages))))
+        for timestamp, message in messages.items():
+            if message['modreply']:
+                msg_user = discord.utils.get(channel.guild.members, id=message['modreply'])
+                if not msg_user:
+                    if message['modreply'] not in cached_modreply_users:
+                        cached_modreply_users[message['modreply']] = await self.fetch_user(message['modreply'])
+                        
+                    msg_user = cached_modreply_users[message['modreply']]
+            else:
+                msg_user = user
+            
+            em = discord.Embed(description=f"**{msg_user.mention} - {msg_user.name}#{msg_user.discriminator}**", colour=msg_user.color, timestamp=datetime.fromtimestamp(float(timestamp)))
+            em.set_thumbnail(url=msg_user.avatar_url)
+            em.set_footer(text=f"{msg_user.id}")
+            if len(message["content"]) > 1024:
+                em.description = f"**{msg_user.mention} - {msg_user.name}#{msg_user.discriminator}**\n**─────────────**\n{message['content'] if len(message['content']) < 1990 else message['content'][:1990] + '...'}"
+            else:
+                em.add_field(name="─────────────", value=message["content"])
+            await self.safe_send_message(channel, embed=em)
                        
     async def on_ready(self):
         await asyncio.sleep(10)
@@ -633,9 +840,24 @@ class AnthemBot(discord.Client):
             print('Found %s new roles!' % len(new_roles))
             for role in new_roles:
                 self.channel_bans[role.id] = {member.id: None for member in discord.utils.get(self.guilds, id=SERVERS['main']).members if role.id in [role.id for role in member.roles]}
-                write_json('channel_banned.json', self.channel_bans)     
+                write_json('channel_banned.json', self.channel_bans)
+                
         print('Done!\n\nFinalizing User Login...')
         await self.user_http.static_login(self.user_token, bot=False)
+        
+        print('Done!\n\nPopulating Mod Mail Logs...')
+        self.mod_mail_db  = self.load_modmail_logs()
+        
+        print('Done!\n\nPopulating Message Logs...')
+        self.messages_log  = self.load_channel_logs()
+        
+        print('Done!\n\nCreating Missing Mod Mail Channels...')
+        for member_id in [member_id for member_id in self.mod_mail_db if not self.mod_mail_db[member_id]['answered']]:
+            if any([message["modreply"] for message in self.mod_mail_db[member_id]["messages"].values()]):
+                await self.get_or_create_modmail_channel(member_id, creation_state="reply")
+            else:
+                await self.get_or_create_modmail_channel(member_id, creation_state="new")
+        
         print('Done!\n\nClearing Bans from Muted Dict...')
         target_server = discord.utils.get(self.guilds, id=SERVERS['main'])
         ban_list = await target_server.bans()
@@ -643,15 +865,17 @@ class AnthemBot(discord.Client):
         for user_id in temp_dict:
             del self.muted_dict[user_id]
         write_json('muted.json', self.muted_dict)
+        
         print('Done!\n\nPutting Together VC Tracker Data...')
-        self.vc_categories = {'na': self.get_channel(CATS['na']),
-                              'eu': self.get_channel(CATS['eu']),
-                              'other': self.get_channel(CATS['other'])}
+        self.vc_categories = {'na': self.get_channel(VC_CATS['na']),
+                              'eu': self.get_channel(VC_CATS['eu']),
+                              'other': self.get_channel(VC_CATS['other'])}
         for category in self.vc_categories.values():
             self.vc_tracker[category.id] = {}
             for channel in [channel for channel in category.channels if isinstance(channel, discord.VoiceChannel)]:
                 self.vc_tracker[category.id][channel.id] = {"mem_len": len(channel.members), "last_event": datetime.utcnow(), "pending_future": None}
         #self.vc_ready = True
+        
         print('Done!\n\nDeserializing Mutes...')
         mutedrole = discord.utils.get(target_server.roles, id=ROLES['muted'])
         temp_dict = dict({user_id: timestamp for user_id, timestamp in self.muted_dict.items() if timestamp or target_server.get_member(user_id)})
@@ -673,13 +897,16 @@ class AnthemBot(discord.Client):
                     if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: 
                         roles = set(([role for role in user.roles if role.id not in UNPROTECTED_ROLES] + [mutedrole]))
                         if set(user.roles) != roles:
-                            await user.edit(roles = list(roles))                    
+                            await user.edit(roles = list(roles))
+                    else:
+                        self.muted_dict.pop(user.id, None)                    
                     try:
                         await user.edit(mute=True)
                     except:
                         pass
                 except discord.Forbidden:
                     print('cannot add role to %s, permission error' % user.name)
+                    
         print('Done!\n\nDeserializing Channel Bans...')
         temp_dict = dict(self.channel_bans)
         temp_dict = dict({role_id: {user_id: timestamp for user_id, timestamp in user_blob.items() if timestamp or target_server.get_member(user_id)} for role_id, user_blob in self.channel_bans.items() if user_blob})
@@ -710,10 +937,7 @@ class AnthemBot(discord.Client):
                         # if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list())
                     # except discord.Forbidden:
                         # print('cannot add role to %s, permission error' % user.name)
-                
-        
-        print('Done!\n\nPopulating Message Logs...')
-        self.messages_log  = self.load_channel_logs()
+                        
         # print('Done!\n\nCacheing Avatars...')
         # for member in discord.utils.get(self.guilds, id=SERVERS['main']).members:
             # if '{}.gif'.format(member.id) not in [files for root, dirs, files in os.walk('avatars', topdown=False)]:
@@ -726,6 +950,7 @@ class AnthemBot(discord.Client):
                             # data = await r.read()
                             # with open("avatars/{}.gif".format(member.id), "wb") as f:
                                 # f.write(data)
+                                
         print('Done!\n\nAppending Missed Mutes...')
         muted_coffee_filter = [member for member in discord.utils.get(self.guilds, id=SERVERS['main']).members if mutedrole in member.roles and member.id not in self.muted_dict]
         for member in muted_coffee_filter:
@@ -742,7 +967,11 @@ class AnthemBot(discord.Client):
         await asyncio.sleep(after)
         await self.safe_delete_message(message)
 
-    async def safe_send_message(self, dest, *, content=None, tts=False, embed=None, file=None, files=None, expire_in=None, nonce=None, quiet=None):
+    async def _wait_delete_msg(self, message, after):
+        await asyncio.sleep(after)
+        await self.safe_delete_message(message)
+
+    async def safe_send_message(self, dest, *, content=None, tts=False, embed=None, file=None, files=None, expire_in=None, nonce=None, quiet=None, self_called=False):
         msg = None
         try:
             time_before = timer()
@@ -757,6 +986,12 @@ class AnthemBot(discord.Client):
             if not quiet:
                 print("Error: Cannot send message to %s, no permission" % dest.name)
         except discord.NotFound:
+            if not self_called and hasattr(dest, "category") and hasattr(dest.category, "id") and dest.category.id in MM_CATS.values() and dest.id in [value.id for value in self.cached_modmail_channels.values()]:
+                if dest.topic:
+                    del self.cached_modmail_channels[int(dest.topic)]
+                    new_chan = await self.get_or_create_modmail_channel(dest.topic , creation_state="new")
+                    print("Handled 404 in Modmail")
+                    msg = await self.safe_send_message(dest, content=content, tts=tts, embed=embed, file=file, files=files, expire_in=expire_in, nonce=nonce, quiet=quiet, self_called=True)
             if not quiet:
                 print("Warning: Cannot send message to %s, invalid channel?" % dest.name)
         finally:
@@ -795,6 +1030,22 @@ class AnthemBot(discord.Client):
                 msg = await self.safe_send_message(message.channel, content=content)
         finally:
             if msg: return msg
+
+    async def safe_edit_channel(self, channel, *, quiet=False, **options):
+        chan = None
+        try:
+            chan = await channel.edit(**options)
+        except discord.NotFound:
+            if hasattr(channel, "category") and hasattr(channel.category, "id") and channel.category.id in MM_CATS.values() and channel.id in [value.id for value in self.cached_modmail_channels.values()]:
+                if channel.topic:
+                    del self.cached_modmail_channels[int(channel.topic)]
+                    new_chan = await self.get_or_create_modmail_channel(channel.topic , creation_state="new")
+                    chan = await new_chan.edit(**options)
+                    print("Handled 404 in Modmail")
+            if not quiet:
+                print(f"Warning: Cannot edit channel \"{channel.name}:{channel.id}\", channel not found")
+        finally:
+            return chan
             
     def mods_only(func):
         @wraps(func)
@@ -814,8 +1065,8 @@ class AnthemBot(discord.Client):
     @mods_only
     async def cmd_alias(self, guild, raw_leftover_args):
         """
-        Usage: {command_prefix}alias [channel ban role alias] [cban role id]
-        Creates an alias for use within the `!cban` command. if ran with no args, outputs a list of all known aliases
+        Usage: {command_prefix}alias [role alias] [role id]
+        Creates an alias for use within the `!cban` or `!addr` commands. if ran with no args, outputs a list of all known aliases
         """
         if not raw_leftover_args or len(raw_leftover_args) < 2:
             newline = '\n'
@@ -993,7 +1244,7 @@ class AnthemBot(discord.Client):
         return Response(':thumbsup:')
     
     @mods_only
-    async def cmd_eval(self, author, guild, message, channel, mentions, eval_content, is_origin_tag=False):
+    async def cmd_eval(self, author, guild, message, channel, mentions, eval_content, is_origin_tag=False, is_modmail=False):
         """
         Usage: {command_prefix}eval "evaluation string"
         runs a command thru the eval param for testing
@@ -1036,43 +1287,50 @@ class AnthemBot(discord.Client):
             except:
                 pass
 
+            if is_modmail == True:
+                print("is modmail!")
+                if value:
+                    return value
+                else:
+                    return None
+                    
             if ret is None:
                 if value:
                     await self.safe_send_message(channel, content=f'```py\n{value}\n```')
             else:
                 self._last_result = ret
-                await self.safe_send_message(channel, content=f'```py\n{value}{ret}\n```')
+                await self.safe_send_message(channel, content=f'```py\n{value}\n{ret}\n```')
                 
-    @mods_only
-    async def cmd_order66(self, guild):
-        """
-        Usage: {command_prefix}eval "evaluation string"
-        runs a command thru the eval param for testing
-        """
-        atg = [member.id for member in guild.members]
+    # @mods_only
+    # async def cmd_order66(self, guild):
+        # """
+        # Usage: {command_prefix}eval "evaluation string"
+        # runs a command thru the eval param for testing
+        # """
+        # atg = [member.id for member in guild.members]
         
-        common = list(set(atg).intersection(self.s95_user_list))
+        # common = list(set(atg).intersection(self.s95_user_list))
         
-        for user_id in common:
+        # for user_id in common:
         
-            user = discord.utils.get(guild.members, id=user_id)
-            if user and not ROLES['staff'] in [role.id for role in user.roles] and not user.bot:
-                try:
-                    msg_to_send = f'Hey there, we noticed you\'re in the discord server "Squadron 95". This discord has been causing the staff at /r/AnthemTheGame plenty of issues with DM spam and coordinated raids so we\'ve decided to kick all people who are in "Squadron 95".\n\nIf you\'d like to rejoin /r/AnthemTheGame, please leave Squadron 95 first! Cheers!'
-                    await self.safe_send_message(user, content='**Admins:** {}'.format(msg_to_send))
-                    if user.id in self.mod_mail_db:
-                        self.mod_mail_db[user.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': msg_to_send, 'modreply': self.user.id}
-                        self.mod_mail_db[user.id]['answered'] = True
-                    else:
-                        self.mod_mail_db[user.id] = {'answered': True, 'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': self.user.id,'content': msg_to_send}}}
+            # user = discord.utils.get(guild.members, id=user_id)
+            # if user and not ROLES['staff'] in [role.id for role in user.roles] and not user.bot:
+                # try:
+                    # msg_to_send = f'Hey there, we noticed you\'re in the discord server "Squadron 95". This discord has been causing the staff at /r/AnthemTheGame plenty of issues with DM spam and coordinated raids so we\'ve decided to kick all people who are in "Squadron 95".\n\nIf you\'d like to rejoin /r/AnthemTheGame, please leave Squadron 95 first! Cheers!'
+                    # await self.safe_send_message(user, content='**Admins:** {}'.format(msg_to_send))
+                    # if user.id in self.mod_mail_db:
+                        # self.mod_mail_db[user.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': msg_to_send, 'modreply': self.user.id}
+                        # self.mod_mail_db[user.id]['answered'] = True
+                    # else:
+                        # self.mod_mail_db[user.id] = {'answered': True, 'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': self.user.id,'content': msg_to_send}}}
                             
-                    write_json('modmaildb.json', self.mod_mail_db)
+                    # write_json('modmaildb.json', self.mod_mail_db)
 
-                    await user.kick(reason="in Squadron 95, cmd ran kick")
-                except:
-                    pass
+                    # await user.kick(reason="in Squadron 95, cmd ran kick")
+                # except:
+                    # pass
         
-        return Response('{}'.format(len(common)), reply=True)
+        # return Response('{}'.format(len(common)), reply=True)
 
                 
     @mods_only
@@ -1081,7 +1339,7 @@ class AnthemBot(discord.Client):
         Usage: {command_prefix}changegame ["new game name"]
         Changes the "Now Playing..." game on Discord!
         """
-        await self.change_presence(activity=discord.Game(name=string_game))
+        await self.change_presence(game=discord.Game(name=string_game))
         return Response(':thumbsup:', reply=True)
 
 
@@ -1106,7 +1364,7 @@ class AnthemBot(discord.Client):
         """
         THIS IS A DEBUG FUNCTION; PLEASE DONT USE IT
         """
-        cat = self.get_channel(CATS[category_sh])
+        cat = self.get_channel(VC_CATS[category_sh])
         if not cat:
             raise CommandError('bad cat')
         offset = [channel for channel in cat.channels if isinstance(channel, discord.VoiceChannel)][0].position
@@ -1135,7 +1393,7 @@ class AnthemBot(discord.Client):
         # """
         # THIS IS A DEBUG FUNCTION; PLEASE DONT USE IT
         # """
-        # cat = self.get_channel(CATS[category_sh])
+        # cat = self.get_channel(VC_CATS[category_sh])
         # if not cat:
             # raise CommandError('bad cat')
         # vcs = {int(channel.name[-3:-1]) if len(channel.members) > 0 else f"!int(channel.name[-3:-1])": channel for channel in cat.channels if isinstance(channel, discord.VoiceChannel)}
@@ -1328,13 +1586,6 @@ class AnthemBot(discord.Client):
         else:
             return
             
-    async def cmd_ping(self, message, author, guild):
-        """
-        Usage: {command_prefix}ping
-        Replies with "PONG!"; Use to test bot's responsiveness
-        """
-        return Response('PONG!', reply=True)
-    
     async def cmd_cmdinfo(self, author, command=None):
         """
         Usage {command_prefix}cmdinfo
@@ -1501,6 +1752,11 @@ class AnthemBot(discord.Client):
         em.set_author(name="Javelin Discussion Access")
         msg = await self.safe_send_message(self.get_channel(CHANS['roleswap']), embed=em)
         await msg.add_reaction(self.get_emoji(REACTS['jav']))
+                
+        em = discord.Embed(description='React below if you\'d like to access <#583856576901677056> to discuss the PTS and provide feedback. Note that this is for focused discussion of the PTS only and general discussion should still go into <#323199344914333696>. You may encounter spoilers; any discussion of PTS material should go in <#583856576901677056> or <#519027023432253440>.', colour=discord.Colour(0xEF4E22))
+        em.set_author(name="Testing Bay Access")
+        msg = await self.safe_send_message(self.get_channel(CHANS['roleswap']), embed=em)
+        await msg.add_reaction(self.get_emoji(REACTS['testing']))
         
         em = discord.Embed(description='React below if you\'d like to be pinged when any news regarding Anthem is posted!', colour=discord.Colour(0xEF4E22))
         em.set_author(name="Anthem News Toggle")
@@ -1529,15 +1785,23 @@ class AnthemBot(discord.Client):
         return Response(':thumbsup:')
 
     @mods_only
-    async def cmd_markread(self, author, guild,  auth_id):
+    async def cmd_markread(self, channel, author, guild,  auth_id=None):
         """
         Usage {command_prefix}markread user_id
         Marks the modmail thread as read if no reply is necessary 
         """
+        if not auth_id:
+            auth_id = int(channel.topic)
         auth_id = int(auth_id)
         if auth_id in self.mod_mail_db:
             self.mod_mail_db[auth_id]['answered'] = True
-            write_json('modmaildb.json', self.mod_mail_db)
+            # write_json('modmaildb.json', self.mod_mail_db)
+            await self.backup_modmail_log(auth_id)
+            channel = await self.get_or_create_modmail_channel(auth_id, creation_state=None)
+            target_category = discord.utils.get(self.get_all_channels(), id=MM_CATS[f"mmread"])
+            if channel and channel.category.id != target_category:
+                await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['read']}{channel.name[2:]}", sync_permissions=True)
+                asyncio.ensure_future(self.transition_modmail_channels())
             return Response(':thumbsup:')
         else:
             raise CommandError('ERROR: User ID not found in Mod Mail DB')
@@ -1576,7 +1840,7 @@ class AnthemBot(discord.Client):
                 else:
                     user = quick_switch_dict['member_obj'].name
                 if sub_per_msg:
-                    msg_dict['content'] = msg_dict['content'][:(2000 - sub_per_msg)] + '...'
+                    msg_dict['content'] = msg_dict['content'][:(1990 - sub_per_msg)] + '...'
                 # if len(msg_dict['content']) > 1020:
                     # msg_dict['content'] = msg_dict['content'][:1020] + '...'
                 quick_switch_dict['embed'].add_field(name='{} | *{}*'.format(user, datetime.utcfromtimestamp(float(timestamp)).strftime('%H:%M %d.%m.%y' )), value=msg_dict['content'], inline=False)
@@ -1600,6 +1864,7 @@ class AnthemBot(discord.Client):
             try:
                 reac, user = await self.wait_for('reaction_add', check=check, timeout=300)
             except:
+                await current_msg.clear_reactions()
                 return
             if str(reac.emoji) == 'ℹ':
                 await self.safe_send_message(current_msg.channel, content=quick_switch_dict['member_obj'].id)
@@ -1610,6 +1875,7 @@ class AnthemBot(discord.Client):
                 current_index-=step
                 await current_msg.remove_reaction(reac.emoji, user)
             else:
+                await current_msg.clear_reactions()
                 return
             await current_msg.clear_reactions()
         
@@ -1627,7 +1893,7 @@ class AnthemBot(discord.Client):
             quick_switch_dict[member_id] = {'embed': discord.Embed(), 'member_obj': await self.fetch_user(member_id)}
             quick_switch_dict[member_id]['embed'].set_author(name='{}({})'.format(quick_switch_dict[member_id]['member_obj'].name, quick_switch_dict[member_id]['member_obj'].id), icon_url=quick_switch_dict[member_id]['member_obj'].avatar_url)
             od = collections.OrderedDict(sorted(self.mod_mail_db[member_id]['messages'].items(), reverse=True))
-            od = collections.OrderedDict(islice(od.items(), 20))
+            od = collections.OrderedDict(islice(od.items(), 10))
             od = collections.OrderedDict(reversed(list(od.items())))
             for timestamp, msg_dict in od.items():
                 user = None
@@ -1676,6 +1942,11 @@ class AnthemBot(discord.Client):
             if str(reac.emoji) == '☑':
                 if not self.mod_mail_db[loop_dict[current_index]['member_obj'].id]['answered']:
                     self.mod_mail_db[loop_dict[current_index]['member_obj'].id]['answered'] = True
+                    channel = await self.get_or_create_modmail_channel(loop_dict[current_index]['member_obj'].id, creation_state=None)
+                    target_category = discord.utils.get(self.get_all_channels(), id=MM_CATS[f"mmread"])
+                    if channel and channel.category.id != target_category:
+                        await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['read']}{channel.name[2:]}", sync_permissions=True)
+                        asyncio.ensure_future(self.transition_modmail_channels())
                     if current_index == len(loop_dict):
                         current_index-=1
                         del loop_dict[current_index+1]
@@ -1704,6 +1975,115 @@ class AnthemBot(discord.Client):
             await current_msg.clear_reactions()
         
     @mods_only
+    async def cmd_cr(self, message, channel, mentions, author, guild, raw_leftover_args):
+        """
+        Usage {command_prefix}cr "tag name"
+        Sends a tag as a DM to the user based on the current channel in the mod mail category
+        If this is a reply, it marks it as read
+        If "anon" is the first word in "Message Content", it sends it without a staff username attached
+        """
+        if not raw_leftover_args:
+            return Response(doc_string(inspect.getdoc(getattr(self, inspect.getframeinfo(inspect.currentframe()).function)), self.prefix))
+            
+        is_anon = False
+        if raw_leftover_args[0] == 'anon':
+            tag = ' '.join(raw_leftover_args[1:])
+            is_anon = True
+        else: 
+            tag = ' '.join(raw_leftover_args)
+            
+        tag_content = self.tags[tag][1]
+        
+        if self.tags[tag][0]:
+            tag_flags = self.tags[tag][0].split()
+            if "unrestricted_eval" in tag_flags or "eval" in tag_flags:
+                resp = await self.cmd_eval(author, guild, message, channel, mentions, self.tags[tag][1], is_origin_tag=True, is_modmail=True)
+                if not resp:
+                    raise CommandError("Error: The tag you chose was an eval which does not return any text and therefore cannot be used in a canned response")
+                tag_content = resp
+        
+        # I just want to say the fact that I have to do this instead of just specifying I want to do .split() but keep characters is so frustrating. fuckin guido and his weird decisions
+        tag_content = [content.split() for content in tag_content.splitlines()]
+        for content in tag_content:
+            if content:
+                content[-1] = f"{content[-1]}\n"
+            else:
+                content.append("\n")
+        tag_content = list(chain.from_iterable(tag_content))
+        if is_anon: tag_content.insert(0, "anon")
+        await self.cmd_r(channel, author, guild, tag_content)
+        
+    @mods_only
+    async def cmd_r(self, channel, author, guild, raw_leftover_args):
+        """
+        Usage {command_prefix}r "Message Content"
+        Sends a DM to the user based on the current channel in the mod mail category
+        If this is a reply, it marks it as read
+        If "anon" is the first word in "Message Content", it sends it without a staff username attached
+        """
+        if not raw_leftover_args:
+            return Response(doc_string(inspect.getdoc(getattr(self, inspect.getframeinfo(inspect.currentframe()).function)), self.prefix))
+        try:
+            auth_id = int(channel.topic)
+        except:
+            raise CommandError('This channel\'s topic was fucked with, please put JUST the ID of the user to modmail in the topic and ping rhino')
+        member = discord.utils.get(guild.members, id=auth_id)
+        
+        if not member:
+            member = discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['ban']).members, id=auth_id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(auth_id)
+                except:
+                    try:
+                        member = await discord.utils.get(self.guilds, id=SERVERS['ban']).fetch_member(auth_id)
+                    except:
+                        pass
+        if member:
+            if raw_leftover_args[0] == 'anon':
+                msg_to_send = ' '.join(raw_leftover_args[1:])
+                em = discord.Embed(description=f"**Mods**", colour=guild.me.color)
+                em.set_thumbnail(url=guild.icon_url)
+                if len(msg_to_send) > 1024:
+                    em.description = f"**Mods**\n**─────────────**\n{msg_to_send if len(msg_to_send) < 1990 else msg_to_send[:1990] + '...'}"
+                else:
+                    em.add_field(name="─────────────", value=msg_to_send)
+                await self.safe_send_message(member, embed=em)
+                
+                if member.id in self.mod_mail_db:
+                    self.mod_mail_db[member.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': '(ANON){}'.format(msg_to_send), 'modreply': author.id}
+                    self.mod_mail_db[member.id]['answered'] = True
+                else:
+                    self.mod_mail_db[member.id] = {'answered': True, 'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': author.id,'content': '(ANON){}'.format(msg_to_send)}}}
+
+            else:
+                msg_to_send = ' '.join(raw_leftover_args)
+                em = discord.Embed(description=f"**{author.mention}**", colour=author.color)
+                em.set_thumbnail(url=author.avatar_url)
+                if len(msg_to_send) > 1024:
+                    em.description = f"**{author.mention}**\n**─────────────**\n{msg_to_send if len(msg_to_send) < 1990 else msg_to_send[:1990] + '...'}"
+                else:
+                    em.add_field(name="─────────────", value=msg_to_send)
+                await self.safe_send_message(member, embed=em)
+                
+                if member.id in self.mod_mail_db:
+                    self.mod_mail_db[member.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': '{}'.format(msg_to_send), 'modreply': author.id}
+                    self.mod_mail_db[member.id]['answered'] = True
+                else:
+                    self.mod_mail_db[member.id] = {'answered': True, 'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': author.id,'content': '{}'.format(msg_to_send)}}}
+            # write_json('modmaildb.json', self.mod_mail_db)
+            await self.backup_modmail_log(member.id)
+            target_category = discord.utils.get(self.get_all_channels(), id=MM_CATS[f"mmwfr"])
+            if channel.category.id != target_category:
+                await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['wfr']}{channel.name[2:]}", sync_permissions=True)
+                asyncio.ensure_future(self.transition_modmail_channels())
+            target_channel_msg = await self.safe_send_message(channel, embed=em)
+            jump_embed = discord.Embed(colour=discord.Colour(0x36393F), description=f"[click to jump (if available)]({target_channel_msg.jump_url})") if target_channel_msg else None
+            await self.safe_send_message(self.get_channel(CHANS['modmail']), content=f"{author.name} sent this to {member.mention} in new mod mail:```{msg_to_send}```", embed=jump_embed)
+        else:
+            raise CommandError('ERROR: User not found')
+        
+    @mods_only
     async def cmd_modmail(self, author, guild, raw_leftover_args):
         """
         Usage {command_prefix}modmail user_id "Message Content"
@@ -1723,7 +2103,15 @@ class AnthemBot(discord.Client):
         if member:
             if raw_leftover_args[0] == 'anon':
                 msg_to_send = ' '.join(raw_leftover_args[1:])
-                await self.safe_send_message(member, content='**Admins:** {}'.format(msg_to_send))
+                em = discord.Embed(description=f"**Mods**", colour=guild.me.color)
+                em.set_thumbnail(url=guild.icon_url)
+                if len(msg_to_send) > 1024:
+                    em.description = f"**Mods**\n**─────────────**\n{msg_to_send if len(msg_to_send) < 1990 else msg_to_send[:1990] + '...'}"
+                else:
+                    em.add_field(name="─────────────", value=msg_to_send)
+                await self.safe_send_message(member, embed=em)
+                    
+                channel = await self.get_or_create_modmail_channel(member.id, creation_state="wfr")
                 if member.id in self.mod_mail_db:
                     self.mod_mail_db[member.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': '(ANON){}'.format(msg_to_send), 'modreply': author.id}
                     self.mod_mail_db[member.id]['answered'] = True
@@ -1732,14 +2120,31 @@ class AnthemBot(discord.Client):
 
             else:
                 msg_to_send = ' '.join(raw_leftover_args)
-                await self.safe_send_message(member, content='**{}:** {}'.format(author.name, msg_to_send))
+                em = discord.Embed(description=f"**{author.mention}**", colour=author.color)
+                em.set_thumbnail(url=author.avatar_url)
+                if len(msg_to_send) > 1024:
+                    em.description = f"**{author.mention}**\n**─────────────**\n{msg_to_send if len(msg_to_send) < 1990 else msg_to_send[:1990] + '...'}"
+                else:
+                    em.add_field(name="─────────────", value=msg_to_send)
+                await self.safe_send_message(member, embed=em)
+                    
+                channel = await self.get_or_create_modmail_channel(member.id, creation_state="wfr")
                 if member.id in self.mod_mail_db:
                     self.mod_mail_db[member.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': '{}'.format(msg_to_send), 'modreply': author.id}
                     self.mod_mail_db[member.id]['answered'] = True
                 else:
                     self.mod_mail_db[member.id] = {'answered': True, 'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': author.id,'content': '{}'.format(msg_to_send)}}}
-            write_json('modmaildb.json', self.mod_mail_db)
-            return Response(':thumbsup: Send this to {}:```{}```'.format(member.name, msg_to_send))
+            # write_json('modmaildb.json', self.mod_mail_db)
+            await self.backup_modmail_log(member.id)
+            target_category = discord.utils.get(self.get_all_channels(), id=MM_CATS[f"mmwfr"])
+            if channel.category.id != target_category:
+                await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['wfr']}{channel.name[2:]}", sync_permissions=True)
+                asyncio.ensure_future(self.transition_modmail_channels())
+                target_channel_msg = await self.safe_send_message(channel, embed=em)
+                jump_embed = discord.Embed(colour=discord.Colour(0x36393F), description=f"[click to jump (if available)]({target_channel_msg.jump_url})") if target_channel_msg else None
+                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=f"{author.name} sent this to {member.mention} in new mod mail:```{msg_to_send}```", embed=jump_embed)
+                    
+            return Response(f':thumbsup: Sent this to {member.mention}:', embed=em)
         else:
             raise CommandError('ERROR: User not found')
 
@@ -1796,6 +2201,9 @@ class AnthemBot(discord.Client):
                 self.last_actions[author.id] = action_msg
                 em = discord.Embed(colour=discord.Colour(0xFFD800), description=MUTED_MESSAGES['timed_over'].format(roles=CHANS['roleswap'], rules=CHANS['rules']))
                 await self.safe_send_message(user, embed=em)
+                target_channel = await self.get_or_create_modmail_channel(user.id, creation_state=None)
+                if target_channel:
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
                 await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were unmuted'))
             except discord.Forbidden:
                 raise CommandError('Not enough permissions to mute user : {}'.format(user.name))
@@ -1803,7 +2211,6 @@ class AnthemBot(discord.Client):
                 traceback.print_exc()
                 raise CommandError('Unable to mute user defined:\n{}\n'.format(user.name))
         return Response(':thumbsup:')
-        
         
     @mods_only
     async def cmd_reason(self, message, guild, author, mentions, message_id, leftover_args):
@@ -1824,11 +2231,16 @@ class AnthemBot(discord.Client):
                     no_id = True
                 else:
                     traceback.print_exc()
-                    raise CommandError(f"No Message ID found by ID {msg_id}")
+                    try:
+                        if float(str(msg_id)).is_integer():
+                            raise CommandError(f"No Message ID found by ID {msg_id}")
+                            
+                    except:
+                        raise CommandError(f"You do not have a message ID stored in the cache. The bot must have recently rebooted. Please use the ID of the message you'd like to provide a reason for.")
             if msg.author.id != self.user.id:
                 return Response(f"I cannot edit other people's messages. Please speak to {msg.author.mention} if you'd like to change their reason")
             reason = ' '.join(leftover_args)
-            edited_content = cleanup_blocks(msg.content).strip().split('\n')[:2]
+            edited_content = cleanup_blocks(msg.content).strip().splitlines()[:2]
             match = re.search("\(Taken by (.*?)\)", edited_content[0])
             if match:
                 edited_content[0] = edited_content[0][:(match.start(0)-1)]
@@ -1839,8 +2251,7 @@ class AnthemBot(discord.Client):
             await self.safe_edit_message(msg, content=edited_content)
             if no_id:
                 return Response(':thumbsup:')
-        return Response(':thumbsup:')
-        
+        return Response(':thumbsup:')        
         
     @mods_only
     async def cmd_cban(self, message, guild, author, mentions, raw_leftover_args):
@@ -1893,10 +2304,6 @@ class AnthemBot(discord.Client):
             try:
                 user = guild.get_member(user.id)
                 if not ROLES['staff'] in [role.id for role in user.roles] and not user.bot: await user.edit(roles = list(set(([role for role in user.roles] + [role]))))
-                try:
-                    await user.edit(mute=True)
-                except:
-                    pass
             except discord.Forbidden:
                 raise CommandError('Not enough permissions to channel ban user : {}'.format(user.name))
             except:
@@ -1921,12 +2328,78 @@ class AnthemBot(discord.Client):
                 self.last_actions[author.id] = action_msg
                 em = discord.Embed(colour=discord.Colour(0xFF0000), description=CBAN_MESSAGES['plain'].format(cban_name=role.name[4:], rules=CHANS['rules']))
                 await self.safe_send_message(user, embed=em)
+            target_channel = await self.get_or_create_modmail_channel(user.id, creation_state=None)
+            if target_channel:
+                await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason=f'as they were assigned {role.name}'))
             await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason=f'as they were assigned {role.name}'))
         
         write_json('channel_banned.json', self.channel_bans)
         return Response(response) 
         
-
+    @mods_only
+    async def cmd_addr(self, message, channel, guild, author, mentions, raw_leftover_args):
+        """
+        Usage {command_prefix}addr [@mention OR User ID OR Nothing in Mod Mail Channel] [role_id or alias]
+        Applies a role to a user.
+        If you'd like to create an alias, find the role id by running `{command_prefix}role ids` and then find the cmdinfo of `{command_prefix}alias`
+        """
+        if not raw_leftover_args:
+            return Response(doc_string(inspect.getdoc(getattr(self, inspect.getframeinfo(inspect.currentframe()).function)), self.prefix))
+        
+        converter = UserConverter()
+        users = []
+        
+        if mentions:
+            for user in mentions:
+                users.append(user)
+                try:
+                    raw_leftover_args.remove(user.mention)
+                except:
+                    raw_leftover_args.remove(f"<@!{user.id}>")
+                    
+        else:
+            temp = list(raw_leftover_args)
+            for item in temp:
+                try:
+                    user_to_append = await converter.convert(message, self, item, discrim_required=True)
+                    users.append(user_to_append)
+                    raw_leftover_args.remove(item)
+                except:
+                    traceback.print_exc()
+                    pass
+                    
+        role = raw_leftover_args.pop(0)
+        
+        if role in [role.name for role in guild.roles]:
+            role = discord.utils.get(guild.roles, name=role)
+        elif role in [role.id for role in guild.roles]:
+            role = discord.utils.get(guild.roles, id=role)
+        elif role in self.cban_role_aliases:
+            role = discord.utils.get(guild.roles, id=self.cban_role_aliases[role])
+        else:
+            raise CommandError(f'No role {role} found')
+        
+        if not users:
+            try:
+                user_id = int(channel.topic)
+                user_to_append = await converter.convert(message, self, str(user_id), discrim_required=True)
+                users.append(user_to_append)
+            except:
+                traceback.print_exc()
+                raise CommandError("Could not find any users")
+            
+        for user in users:
+            try:
+                user = guild.get_member(user.id)
+                await user.edit(roles = list(set(([role for role in user.roles] + [role]))))
+            except discord.Forbidden:
+                raise CommandError('Not enough permissions to apply roles to user : {}'.format(user.name))
+            except:
+                traceback.print_exc()
+                raise CommandError('Unable to apply roles to user defined:\n{}\n'.format(user.name))
+        response = ':thumbsup:'
+        return Response(response) 
+        
     @mods_only
     async def cmd_history(self, channel, message, guild, author, mentions, raw_leftover_args):
         """
@@ -1957,7 +2430,12 @@ class AnthemBot(discord.Client):
         for message_block in search_in_actions:
             for msg in message_block:
                 if str(user.id) in msg["content"] and msg["id"] not in history_items:
-                    history_items[msg["id"]] = {"content": cleanup_blocks(msg["content"]), "actor": discord.utils.get(guild.members, id=int(msg["author"]["id"]))}
+                    formatted_content = cleanup_blocks(msg["content"]).strip().splitlines()
+                    
+                    if len(formatted_content) == 3 and str(user.id) not in formatted_content[1]:
+                        continue
+                        
+                    history_items[msg["id"]] = {"content": formatted_content, "actor": discord.utils.get(guild.members, id=int(msg["author"]["id"]))}
         current_index = 0
         step = 10
         current_msg = None
@@ -1970,7 +2448,7 @@ class AnthemBot(discord.Client):
 
             od = collections.OrderedDict(islice(message_dict.items(),current_index, current_index+step))
             for ts_id, msg_block in od.items():
-                fmt_msg = msg_block["content"].strip().split('\n')
+                fmt_msg = msg_block["content"]
                 actor = msg_block["actor"]
                 if not actor:
                     return CommandError("something is broke, poke rhino about it: actor not found in request via user bot")
@@ -2064,6 +2542,9 @@ class AnthemBot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Warned user for -REASON NOT GIVEN-', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
                 self.last_actions[author.id] = action_msg
+            target_channel = await self.get_or_create_modmail_channel(user.id, creation_state=None)
+            if target_channel:
+                await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were warned'))
             await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were warned'))
         
         return Response(':thumbsup:') 
@@ -2139,6 +2620,9 @@ class AnthemBot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user forever', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
                 self.last_actions[author.id] = action_msg
+            target_channel = await self.get_or_create_modmail_channel(user.id, creation_state=None)
+            if target_channel:
+                await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
             await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
         
         write_json('muted.json', self.muted_dict)
@@ -2180,10 +2664,10 @@ class AnthemBot(discord.Client):
         seconds_to_slow = timestamp_to_seconds(raw_leftover_args)
         for channel in channels:
             if not seconds_to_slow and raw_leftover_args.startswith("0"):
-                await channel.edit(slowmode_delay=0)
+                await self.safe_edit_channel(channel, slowmode_delay=0)
                 await self.safe_send_message(channel, content='This channel is no longer in slow mode!')
-            elif seconds_to_slow and 0 < seconds_to_slow <= 120:
-                await channel.edit(slowmode_delay=seconds_to_slow)
+            elif seconds_to_slow and 0 < seconds_to_slow <= 21600:
+                await self.safe_edit_channel(channel, slowmode_delay=seconds_to_slow)
                 await self.safe_send_message(channel, content='The delay between allowed messages is now **%s seconds**!' % seconds_to_slow)
             else:
                 raise CommandError('ERROR: Time provided is invalid (not between the range of 0 to 120 seconds).')
@@ -2337,7 +2821,7 @@ class AnthemBot(discord.Client):
 
         to_send = '\n'.join(messages)
 
-        if len(to_send) > 2000:
+        if len(to_send) > 1990:
             return Response(f'Successfully removed {clean_string(deleted)} messages.', delete_after=10, delete_invoking=True) 
         else:
             return Response(clean_string(to_send), delete_after=10, delete_invoking=True) 
@@ -2371,7 +2855,12 @@ class AnthemBot(discord.Client):
                 pass
                 
         if not user:
-            user = author
+            try:
+                user = await converter.convert(message, self, channel.topic)
+            except:
+                pass
+            if not user:
+                user = author
             
         member = discord.utils.get(guild.members, id=user.id)
         try:
@@ -2431,7 +2920,7 @@ class AnthemBot(discord.Client):
             em.add_field(name='Messages in Server:', value='{}'.format(member_search["total_results"]), inline=False)
             em.add_field(name='Voice Channel Activity:', value=f'{vc_string}', inline=False)
             try:
-                bans = await guild.get_ban(user)
+                bans = await guild.fetch_ban(user)
                 reason = bans.reason
                 if not reason:
                     history_items = []
@@ -2526,6 +3015,7 @@ class AnthemBot(discord.Client):
             # except:
                 # pass
             try:
+                if  ROLES['staff'] in [role.id for role in user.roles]: return Response('Error: User is Staff!')
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Softbanned user', reason='Action taken by {}#{}'.format(author.name, author.discriminator)))
                 self.last_actions[author.id] = action_msg
                 await self.http.ban(user.id, guild.id, ban_time)
@@ -2541,7 +3031,7 @@ class AnthemBot(discord.Client):
     async def log_action(self, user, action, *, message=None, after = None):
         file = None
         if action == 'server_join':
-            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Account **{} old.**'.format(strfdelta(datetime.utcnow() - user.created_at)),colour=discord.Colour(0x32CD32), timestamp=datetime.utcnow())
+            em = discord.Embed(description='{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user), title='Account **{} old.**'.format(strfdelta(datetime.utcnow() - user.created_at)), colour=discord.Colour(0x32CD32), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳User Joined Server", icon_url="https://i.imgur.com/cjJm2Yb.png")
             em.set_thumbnail(url=user.avatar_url)
             if datetime.utcnow() - timedelta(hours=24) < user.created_at:
@@ -2562,6 +3052,7 @@ class AnthemBot(discord.Client):
             em.set_author(name="𝅳𝅳𝅳User Unbanned from Server", icon_url="https://i.imgur.com/hPTzmRa.png")
             em.set_thumbnail(url=user.avatar_url)
         elif action == 'message_edit':
+            if message.channel.id in UNLOGGED_CHANNELS: return
             em = discord.Embed(description='**𝅳𝅳𝅳User Edited Message by ID {2} in {1}**\n{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user, message.channel.mention, message.id), colour=discord.Colour(0xFFFF00), timestamp=datetime.utcnow())
             em.set_author(name="𝅳𝅳𝅳", icon_url="https://i.imgur.com/NLpSnr2.png")
             em.set_thumbnail(url=user.avatar_url)
@@ -2579,6 +3070,7 @@ class AnthemBot(discord.Client):
              
             em.add_field(name='\nAFTER: ', value=after.content, inline=False)
         elif action == 'message_delete':
+            if message['channel'] in UNLOGGED_CHANNELS: return
             em = discord.Embed(description='**User\'s Message By ID {2} Deleted in <#{1}>**\n{0.mention} - `{0.name}#{0.discriminator} ({0.id})`'.format(user, message['channel'], message['message_id']),colour=discord.Colour(0x305ebf), timestamp=datetime.utcnow())
             em.set_author(name="", icon_url="https://i.imgur.com/MrrRQTo.png")
             em.set_thumbnail(url=user.avatar_url)
@@ -2591,6 +3083,7 @@ class AnthemBot(discord.Client):
                 em.add_field(name='ATTACHMENTS: ', value=', '.join([attachment.url for attachment in after]), inline=False)
                 
         elif action == 'bulk_message_delete':
+            if message[0].channel.id in UNLOGGED_CHANNELS: return
             actor = user
             em = []
             author_dict = {msg.author: [] for msg in message}
@@ -2710,6 +3203,8 @@ class AnthemBot(discord.Client):
                 await self.http.remove_role(SERVERS['main'], user_id, ROLES['ps4'], reason=None)
             if emoji.id == REACTS['gameping']:
                 await self.http.remove_role(SERVERS['main'], user_id, ROLES['gamenews'], reason=None)
+            if emoji.id == REACTS['testing']:
+                await self.http.remove_role(SERVERS['main'], user_id, ROLES['testing'], reason=None)
             if emoji.id == REACTS['colossus']:
                 await self.http.remove_role(SERVERS['main'], user_id, ROLES['colossus'], reason=None)
             if emoji.id == REACTS['interceptor']:
@@ -2781,7 +3276,13 @@ class AnthemBot(discord.Client):
                     auth_id = int(match.group(1))
                     if auth_id in self.mod_mail_db:
                         self.mod_mail_db[auth_id]['answered'] = True
-                        write_json('modmaildb.json', self.mod_mail_db)
+                        # write_json('modmaildb.json', self.mod_mail_db)
+                        await self.backup_modmail_log(auth_id)
+                        channel = await self.get_or_create_modmail_channel(auth_id, creation_state=None)
+                        target_category = discord.utils.get(self.get_all_channels(), id=MM_CATS[f"mmread"])
+                        if channel and channel.category.id != target_category:
+                            await self.safe_edit_channel(channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS['read']}{channel.name[2:]}", sync_permissions=True)
+                            asyncio.ensure_future(self.transition_modmail_channels())
                         await self.safe_send_message(modmail, content=':thumbsup:')
                         
         if channel_id == CHANS['roleswap']:
@@ -2796,6 +3297,8 @@ class AnthemBot(discord.Client):
                 await self.http.add_role(SERVERS['main'], user_id, ROLES['ps4'], reason=None)
             if emoji.id == REACTS['gameping']:
                 await self.http.add_role(SERVERS['main'], user_id, ROLES['gamenews'], reason=None)
+            if emoji.id == REACTS['testing']:
+                await self.http.add_role(SERVERS['main'], user_id, ROLES['testing'], reason=None)
             if emoji.id == REACTS['colossus']:
                 await self.http.add_role(SERVERS['main'], user_id, ROLES['colossus'], reason=None)
             if emoji.id == REACTS['interceptor']:
@@ -2838,6 +3341,10 @@ class AnthemBot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
+                
+                target_channel = await self.get_or_create_modmail_channel(user.id, creation_state=None)
+                if target_channel:
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
                 await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted'))
             if reaction.emoji.id == REACTS['24mute']:
                 try:
@@ -2856,6 +3363,9 @@ class AnthemBot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user for 24 hrs', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
+                target_channel = await self.get_or_create_modmail_channel(user.id, creation_state=None)
+                if target_channel:
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 24 hrs'))
                 await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 24 hrs'))
                 asyncio.ensure_future(self.queue_timed_mute(86400, user, mutedrole, user.id))
             if reaction.emoji.id == REACTS['48mute']:
@@ -2875,6 +3385,9 @@ class AnthemBot(discord.Client):
                 await self.safe_send_message(user, embed=em)
                 action_msg = await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=user.name, optional_content='', discrim=user.discriminator ,id=user.id, action='Muted user for 48 hrs', reason='Action taken by {}#{}'.format(member.name, member.discriminator)))
                 self.last_actions[member.id] = action_msg
+                target_channel = await self.get_or_create_modmail_channel(user.id, creation_state=None)
+                if target_channel:
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 48 hrs'))
                 await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=user.mention, id=user.id, reason='as they were muted for 48 hrs'))
                 asyncio.ensure_future(self.queue_timed_mute(172800, user, mutedrole, user.id))
             if reaction.emoji.id == REACTS['ban']:
@@ -2895,23 +3408,23 @@ class AnthemBot(discord.Client):
                             
     async def on_member_join(self, member):
         if member.guild.id == SERVERS['ban']: return
-        elif member.id in self.s95_user_list:
-            try:
-                msg_to_send = f'Hey there, we noticed you\'re in the discord server "Squadron 95". This discord has been causing the staff at /r/AnthemTheGame plenty of issues with DM spam and coordinated raids so we\'ve decided to kick all people who join and are in "Squadron 95".\n\nIf you\'d like to rejoin /r/AnthemTheGame, please leave Squadron 95 first! Cheers!'
-                await self.safe_send_message(member, content='**BOT MESSAGE:** {}'.format(msg_to_send))
-                if member.id in self.mod_mail_db:
-                    self.mod_mail_db[member.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': msg_to_send, 'modreply': self.user.id}
-                    self.mod_mail_db[member.id]['answered'] = True
-                else:
-                    self.mod_mail_db[member.id] = {'answered': True, 'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': self.user.id,'content': msg_to_send}}}
+        # elif member.id in self.s95_user_list:
+            # try:
+                # msg_to_send = f'Hey there, we noticed you\'re in the discord server "Squadron 95". This discord has been causing the staff at /r/AnthemTheGame plenty of issues with DM spam and coordinated raids so we\'ve decided to kick all people who join and are in "Squadron 95".\n\nIf you\'d like to rejoin /r/AnthemTheGame, please leave Squadron 95 first! Cheers!'
+                # await self.safe_send_message(member, content='**BOT MESSAGE:** {}'.format(msg_to_send))
+                # if member.id in self.mod_mail_db:
+                    # self.mod_mail_db[member.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': msg_to_send, 'modreply': self.user.id}
+                    # self.mod_mail_db[member.id]['answered'] = True
+                # else:
+                    # self.mod_mail_db[member.id] = {'answered': True, 'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': self.user.id,'content': msg_to_send}}}
                         
-                write_json('modmaildb.json', self.mod_mail_db)
+                # write_json('modmaildb.json', self.mod_mail_db)
 
-                await member.kick(reason="in Squadron 95, kicked on join")
-                return
-            except:
-                traceback.print_exc()
-                pass
+                # await member.kick(reason="in Squadron 95, kicked on join")
+                # return
+            # except:
+                # traceback.print_exc()
+                # pass
 
         updated_member_roles = []
         for role_id in self.channel_bans:
@@ -2974,7 +3487,7 @@ class AnthemBot(discord.Client):
                 
                 # if not [role for role in before.roles if role.id  in [ROLES['banteam']]] and [role for role in after.roles if role.id  in [ROLES['banteam']]]:
                     # await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=before.name, discrim=before.discriminator ,id=before.id, optional_content='', action='Ban-Player-Team-LFM Applied', reason='Someone will post a screenshot soon (I hope)'))
-                if not [role for role in before.roles if role.id  in [ROLES['muted']]] and [role for role in after.roles if role.id  in [ROLES['muted']]]:
+                if not [role for role in before.roles if role.id  in [ROLES['muted']]] and [role for role in after.roles if role.id  in [ROLES['muted']]] and before.id not in self.muted_dict:
                     await asyncio.sleep(5)
                     if before.id not in self.muted_dict:
                         self.muted_dict[before.id] = None
@@ -2996,7 +3509,7 @@ class AnthemBot(discord.Client):
                     # write_json('sd_bl.json', self.serious_d_blacklist)
                     
                 for role_id in self.channel_bans:
-                    if not [role for role in before.roles if role.id == role_id] and [role for role in after.roles if role.id == role_id]:
+                    if not [role for role in before.roles if role.id == role_id] and [role for role in after.roles if role.id == role_id] and before.id not in self.channel_bans[role_id]:
                         self.channel_bans[role_id][before.id] = None
                         print('user {} now channel banned'.format(before.name))
                         write_json('channel_banned.json', self.channel_bans)
@@ -3015,7 +3528,8 @@ class AnthemBot(discord.Client):
         if not isinstance(before.channel, discord.abc.PrivateChannel):
             if before.content != after.content:
                 await self.log_action(user=before.author, message=before, after=after,  action='message_edit')
-        await self.on_message(after, edit=True)
+        if before.content != after.content:
+            await self.on_message(after, edit=True)
         
     async def on_guild_channel_delete(self, channel):
         if channel.category and self.vc_tracker[channel.category.id] and self.vc_tracker[channel.category.id][channel.id]:
@@ -3051,7 +3565,7 @@ class AnthemBot(discord.Client):
                 staff_role = True
                 await role.edit(mentionable=True)
                 await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=member.name, optional_content='', discrim=member.discriminator ,id=member.id, action='Automatically Voice Muted', reason='Moved voice channels 30+ times', ))
-                optional_content = ':radioactive:radioactive: `(VC Ban Applied)` '
+                optional_content = ':radioactive::radioactive: `(VC Ban Applied)` '
                 member_roles = [vc_muted_role] + member.roles
                 try:
                     await member.edit(mute=True)
@@ -3102,8 +3616,6 @@ class AnthemBot(discord.Client):
             
 
     async def on_message(self, message, edit=False):
-        if message.channel.id == CHANS['modmail']:
-            self.last_modmail_poster = message.author.id
             
         if message.author == self.user or message.webhook_id:
             return
@@ -3115,23 +3627,56 @@ class AnthemBot(discord.Client):
                 await self.role_ping_toggle['server'].edit(mentionable=False)
                 self.role_ping_toggle['server'] = None
                 
-        if self.last_modmail_poster == self.user.id: 
-            self.divider_content = '__                                                                                                          __\n\n'
-        else:
-            self.divider_content = ''
-
         if isinstance(message.channel, discord.abc.PrivateChannel):
-            print('pm')
+            member_object = discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['main']).members, id=message.author.id)
+            if not member_object:
+                member_object = discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['ban']).members, id=message.author.id)
+            message.author = member_object
+            if message.author.id in self.anti_spam_modmail_list and self.anti_spam_modmail_list[message.author.id]["blocked"]:
+                if datetime.utcnow() - timedelta(minutes=30) < self.anti_spam_modmail_list[message.author.id]["last_message"]:
+                    self.anti_spam_modmail_list[message.author.id]["last_message"] = datetime.utcnow()
+                    self.anti_spam_modmail_list[message.author.id]["count"] += 1
+                    return
+                    
+                self.anti_spam_modmail_list[message.author.id]["last_message"] = datetime.utcnow()
+                self.anti_spam_modmail_list[message.author.id]["count"] = 1
+                self.anti_spam_modmail_list[message.author.id]["blocked"] = False
+                
             if message.author.id in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members] and len(discord.utils.get(discord.utils.get(self.guilds, id=SERVERS['main']).members, id=message.author.id).roles) < 2 and message.author.id not in self.anti_stupid_modmail_list:
-                await self.safe_send_message(message.author, content='I noticed you\'re attempting to send the staff a mod mail but have no roles, if this is your issue __**PLEASE**__ make sure to review the message you recieved when you joined __along__ with reading over <#323187591702773763>! If this didn\'t help, please resend your original message!')
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+'→ I sent a message to {}({}) to remind them to read the welcome DM as they attempted to DM me without any roles'.format(message.author.mention, message.author.id))
-
+                
+                em = discord.Embed(description=f"**{self.user.mention}**", colour=discord.utils.get(self.guilds, id=SERVERS['main']).me.color)
+                em.set_thumbnail(url=self.user.avatar_url)
+                em.add_field(name="─────────────", value=f"I noticed you\'re attempting to send the staff a mod mail but have no roles, if this is your issue __**PLEASE**__ make sure to review the message you recieved when you joined __along__ with reading over <#{CHANS['rules']}>! If this didn\'t help, please resend your original message!")
+                await self.safe_send_message(message.author, embed=em)
+                target_channel = await self.get_or_create_modmail_channel(message.author.id, creation_state=None)
+                if target_channel:
+                    await self.safe_send_message(target_channel, content='→ I sent a message to {}({}) to remind them to read the welcome DM as they attempted to DM me without any roles'.format(message.author.mention, message.author.id))
                 self.anti_stupid_modmail_list.append(message.author.id)
                 return
                 
+            if message.author.id in self.anti_spam_modmail_list:
+                if datetime.utcnow() - timedelta(seconds=2) < self.anti_spam_modmail_list[message.author.id]["last_message"]:
+                    self.anti_spam_modmail_list[message.author.id]["last_message"] = datetime.utcnow()
+                    self.anti_spam_modmail_list[message.author.id]["count"] += 1
+                else:
+                    self.anti_spam_modmail_list[message.author.id]["last_message"] = datetime.utcnow()
+                    self.anti_spam_modmail_list[message.author.id]["count"] = 1
+                if self.anti_spam_modmail_list[message.author.id]["count"] > 4:
+                    self.anti_spam_modmail_list[message.author.id]["blocked"] = True
+                    target_channel = await self.get_or_create_modmail_channel(message.author.id, creation_state=None)
+                    if target_channel:
+                        await self.safe_send_message(target_channel, content='→ I\'ve blocked {}({}) from sending me any more mod mail as they spammed me.'.format(message.author.mention, message.author.id))
+            else:
+                self.anti_spam_modmail_list[message.author.id] = {"last_message": datetime.utcnow(), "count": 1, "blocked": False}
+                
             if not edit:
                 try:
-                    await self.safe_send_message(message.author, content='Thank you for your message! Our mod team will reply to you as soon as possible.')
+                    if not(message.author.id in self.recent_modmail_replies and datetime.utcnow() - timedelta(minutes=30) < self.recent_modmail_replies[message.author.id]):
+                        em = discord.Embed(description=f"**{self.user.mention}**", colour=discord.utils.get(self.guilds, id=SERVERS['main']).me.color)
+                        em.set_thumbnail(url=self.user.avatar_url)
+                        em.add_field(name="─────────────", value=f"Thank you for your message! Our mod team will reply to you as soon as possible.")
+                        await self.safe_send_message(message.author, embed=em)
+                    self.recent_modmail_replies[message.author.id] = datetime.utcnow()
                 except:
                     print('ERROR: Cannot send message to user {} ({}#{})'.format(message.author.mention, message.author.name, message.author.discriminator))
                     
@@ -3141,34 +3686,61 @@ class AnthemBot(discord.Client):
                 msg_content = message.clean_content
                 
             if message.attachments:
-                msg_attachments = '\n~Attachments: {}'.format(', '.join([attachment.url for attachment in message.attachments]))
+                msg_attachments = ', '.join([attachment.url for attachment in message.attachments])
+                if not msg_attachments:
+                    msg_attachments = ''
+                else:
+                    msg_attachments = '\n~Attachments: {}'.format(msg_attachments)
             else:
                 msg_attachments = ''
                 
+            
+            ban_roles = [role.name for role in message.author.roles if role.id in self.channel_bans]
+            msg_alert = ""
             if message.author.id in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['ban']).members] and message.author.id not in [member.id for member in discord.utils.get(self.guilds, id=SERVERS['main']).members]:
-                msg_alert = '\n**__WARNING: USER IN BANNED SERVER__**'
-            # elif message.author.id in self.serious_d_blacklist:
-                # msg_alert = '\n**__WARNING: USER IN SERIOUS DISCUSSION BLACKLIST__**'
+                msg_alert += '\n**__WARNING: USER IN BANNED SERVER__**'
             else:
-                msg_alert = ''
+                if ban_roles:
+                    msg_alert = f'\n**__WARNING: USER HAS THE FOLLOWING CHANNEL BANS "{", ".join([role_name[4:] for role_name in ban_roles])}"__**'
+                if datetime.utcnow() - timedelta(hours=48) < message.author.created_at:
+                    msg_alert = f'\n**__WARNING: USER HAS ACCOUNT LESS THAN 48 HRS OLD__**'
                 
             if edit:
-                msg_edit = 'EDITED MSG '
+                msg_edit = 'EDITED MSG:\n'
             else:
                 msg_edit = ''
                 
             if message.author.id in self.mod_mail_db:
+                target_channel = await self.get_or_create_modmail_channel(message.author.id, creation_state="reply")
+                target_category = discord.utils.get(self.get_all_channels(), id=MM_CATS[f"mmreply"])
+                mm_symbol = "reply"
                 self.mod_mail_db[message.author.id]['messages']['{}'.format(datetime_to_utc_ts(datetime.now()))] = {'content': '{}{}'.format(msg_content, msg_attachments), 'modreply': None}
                 self.mod_mail_db[message.author.id]['answered'] = False
             else:
+                target_channel = await self.get_or_create_modmail_channel(message.author.id, creation_state="new")
+                target_category = discord.utils.get(self.get_all_channels(), id=MM_CATS[f"mmnew"])
+                mm_symbol = "new"
                 self.mod_mail_db[message.author.id] = {'answered': False,'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': None,'content': '{}\n~ATTACHMENT:{}'.format(msg_content, ', '.join([attachment.url for attachment in message.attachments]))}}}
-            await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+'**{edited_alert}From:** *{mention}*:\n```{message_content}```{attachment_info}{alert_info}\nReply ID: `{author_id}`'.format(edited_alert = msg_edit,
-                                                                                                                                                                                                                                        mention = message.author.mention,
-                                                                                                                                                                                                                                        message_content = msg_content,
-                                                                                                                                                                                                                                        attachment_info = msg_attachments,
-                                                                                                                                                                                                                                        alert_info =  msg_alert,
-                                                                                                                                                                                                                                        author_id = message.author.id))
-            write_json('modmaildb.json', self.mod_mail_db)
+            
+            em = discord.Embed(description=f"**{message.author.mention} - {message.author.name}#{message.author.discriminator}**\n{msg_alert}", colour=message.author.color, timestamp=datetime.utcnow())
+            em.set_thumbnail(url=message.author.avatar_url)
+            em.set_footer(text=f"{message.author.id}")
+            newline = "\n"
+            if len(msg_content) > 1024:
+                em.description = f"**{message.author.mention} - {message.author.name}#{message.author.discriminator}**\n{msg_alert}\n**─────────────**\n{msg_edit+newline if msg_edit else ''}{msg_content if len(msg_content) < 1990 else msg_content[:1990] + '...'}"
+            else:
+                em.add_field(name="─────────────", value=f"{msg_edit+newline if msg_edit else ''}{msg_content}")
+            if msg_attachments:
+                target_channel_msg = await self.safe_send_message(target_channel, embed=em, content='\n'.join([attachment.url for attachment in message.attachments]))    
+            else:
+                target_channel_msg = await self.safe_send_message(target_channel, embed=em)    
+            if target_channel and target_channel.category.id != target_category:
+                await self.safe_edit_channel(target_channel, category=target_category, name=f"⦗{MODMAIL_SYMBOLS[mm_symbol]}{target_channel.name[2:]}", sync_permissions=True)
+                asyncio.ensure_future(self.transition_modmail_channels())
+            jump_embed = discord.Embed(colour=discord.Colour(0x36393F), description=f"[click to jump (if available)]({target_channel_msg.jump_url})") if target_channel_msg else None
+            await self.safe_send_message(self.get_channel(CHANS['modmail']), content=f'**{msg_edit}From:** *{message.author.mention}({message.author.id})*:\n```{msg_content}```{msg_attachments}', embed=jump_embed)         
+            # write_json('modmaildb.json', self.mod_mail_db)
+            await self.backup_modmail_log(message.author.id)
             return
         else:
             if message.guild.id == SERVERS['ban']: return
@@ -3263,9 +3835,11 @@ class AnthemBot(discord.Client):
                 except:
                     pass
                 self.muted_dict[message.author.id] = None
-                await self.safe_send_message(message.author, content=MUTED_MESSAGES['plain'].format(rules=CHANS['rules'], muted=CHANS['muted']))
+                await self.safe_send_message(message.author, content=MUTED_MESSAGES['plain'].format(rules=CHANS['rules']))
                 await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, optional_content='', discrim=message.author.discriminator ,id=message.author.id, action='Muted user', reason='Mention Spam in excess of 5 mentions per message'))
-                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
+                target_channel = await self.get_or_create_modmail_channel(message.author.id, creation_state=None)
+                if target_channel:
+                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
             elif len(message.mentions) > 2 and message.author.id in self.mention_spam_watch and not edit:
                 if datetime.utcnow() - timedelta(minutes=30) < self.mention_spam_watch[message.author.id]:
                     print(f"2x Spam Watch broken by {message.author.name}, muting")
@@ -3278,9 +3852,11 @@ class AnthemBot(discord.Client):
                     except:
                         pass
                     self.muted_dict[message.author.id] = None
-                    await self.safe_send_message(message.author, content=MUTED_MESSAGES['plain'].format(rules=CHANS['rules'], muted=CHANS['muted']))
+                    await self.safe_send_message(message.author, content=MUTED_MESSAGES['plain'].format(rules=CHANS['rules']))
                     await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, optional_content='', discrim=message.author.discriminator ,id=message.author.id, action='Muted user', reason='Mention Spam in excess of 3 mentions per message more than once'))
-                    await self.safe_send_message(self.get_channel(CHANS['modmail']), content=self.divider_content+MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
+                    target_channel = await self.get_or_create_modmail_channel(message.author.id, creation_state=None)
+                    if target_channel:
+                        await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='as they were muted'))
                 else:
                     self.mention_spam_watch[message.author.id] = datetime.utcnow()
             elif len(message.mentions) > 2:
@@ -3306,8 +3882,25 @@ class AnthemBot(discord.Client):
                                 self.mod_mail_db[message.author.id] = {'answered': True, 'messages': {'{}'.format(datetime_to_utc_ts(datetime.now())): {'modreply': self.user.id,'content': msg_to_send}}}
 
                             await self.safe_send_message(message.author, content=msg_to_send)
-                            await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending discord invites'))
-                            await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, action='Deleted message', discrim=message.author.discriminator ,id=message.author.id, reason='Sent a nonwhitelisted invite url ({} : {})'.format(item, invite.guild.id), optional_content='Message sent in {}: `{}`\n'.format(message.channel.mention, message.clean_content)))
+                            
+                            target_channel = await self.get_or_create_modmail_channel(message.author.id, creation_state=None)
+                            if not self.use_new_modmail:
+                                await self.safe_send_message(message.author, content=msg_to_send)
+                                if target_channel:
+                                    channel_list = [self.get_channel(CHANS['modmail']), target_channel]
+                                else:
+                                    channel_list = [self.get_channel(CHANS['modmail'])]
+                                for chan in channel_list:
+                                    await self.safe_send_message(chan, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending discord invites'))
+                            else:
+                                em = discord.Embed(description=f"**{self.user.mention}**", colour=message.guild.me.color)
+                                em.set_thumbnail(url=self.user.avatar_url)
+                                em.add_field(name="─────────────", value=msg_to_send)
+                                await self.safe_send_message(message.author, embed=em)
+                                if target_channel:
+                                    await self.safe_send_message(target_channel, content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending discord invites'))
+                                await self.safe_send_message(self.get_channel(CHANS['modmail']), content=MSGS['modmailaction'].format(action_log_id=CHANS['actions'], username=message.author.mention, id=message.author.id, reason='for sending discord invites'))
+                            await self.safe_send_message(self.get_channel(CHANS['actions']), content=MSGS['action'].format(username=message.author.name, action='Deleted discord invite', discrim=message.author.discriminator ,id=message.author.id, reason='Sent a nonwhitelisted invite url ({} : {})'.format(item, invite.guild.id), optional_content='Message sent in {}: `{}`\n'.format(message.channel.mention, message.clean_content)))
                             return
             except:
                 pass
@@ -3322,7 +3915,7 @@ class AnthemBot(discord.Client):
                 channel_muted_role = self.slow_mode_dict[message.channel.id]['channel_muted_role']
                 await message.author.add_roles(channel_muted_role)
                 await asyncio.sleep(time_out)
-                await message.author.add_roles(channel_muted_role)
+                await message.author.remove_roles(channel_muted_role)
             return
         try:
             command, *args = shlex.split(message.content.strip())
@@ -3455,7 +4048,7 @@ class AnthemBot(discord.Client):
                         ' '.join(args_expected)
                     )
 
-                docs = '\n'.join(l.strip() for l in docs.split('\n'))
+                docs = '\n'.join(l.strip() for l in docs.splitlines())
                 await self.safe_send_message(
                     message.channel,
                     content= '```\n%s\n```' % docs.format(command_prefix=self.prefix),
@@ -3464,7 +4057,7 @@ class AnthemBot(discord.Client):
                 if message.channel.id in list(self.slow_mode_dict.keys()):
                     time_out = self.slow_mode_dict[message.channel.id]['time_between']
                     channel_muted_role = self.slow_mode_dict[message.channel.id]['channel_muted_role']
-                    await message.author.add_roles([channel_muted_role])
+                    await message.author.add_roles(channel_muted_role)
                     await asyncio.sleep(time_out)
                     await message.author.remove_roles(channel_muted_role)
                 return
@@ -3472,6 +4065,7 @@ class AnthemBot(discord.Client):
             response = await handler(**handler_kwargs)
             if response and isinstance(response, Response):
                 content = response.content
+                embed = response.embed
                 if response.reply:
                     content = '%s, %s' % (message.author.mention, content)
                     
@@ -3479,9 +4073,9 @@ class AnthemBot(discord.Client):
                     await self.safe_delete_message(message)
                     
                 if response.delete_after > 0:
-                    sentmsg = await self.safe_send_message(message.channel, content=content, expire_in=response.delete_after)
+                    sentmsg = await self.safe_send_message(message.channel, content=content, embed=embed, expire_in=response.delete_after)
                 else:
-                    sentmsg = await self.safe_send_message(message.channel, content=content)
+                    sentmsg = await self.safe_send_message(message.channel, content=content, embed=embed)
                     
         except CommandError as e:
             await self.safe_send_message(message.channel, content='```\n%s\n```' % e.message, expire_in=15)
@@ -3493,7 +4087,7 @@ class AnthemBot(discord.Client):
         if message.channel.id in list(self.slow_mode_dict.keys()):
             time_out = self.slow_mode_dict[message.channel.id]['time_between']
             channel_muted_role = self.slow_mode_dict[message.channel.id]['channel_muted_role']
-            await message.author.add_roles([channel_muted_role])
+            await message.author.add_roles(channel_muted_role)
             await asyncio.sleep(time_out)
             await message.author.remove_roles(channel_muted_role)
 
