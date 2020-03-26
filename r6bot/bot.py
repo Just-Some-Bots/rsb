@@ -1773,14 +1773,14 @@ class R6Bot(discord.Client):
                 )
                 self.vc_name_locks[author.id] = author.voice.channel.id
 
-                if from_lfg:
+                if from_lfg == True:
                     return
 
                 return Response(
                     ":thumbsup:", reply=True, delete_after=15, delete_with_expire=True
                 )
             else:
-                if from_lfg:
+                if from_lfg == True:
                     return
 
                 return Response(
