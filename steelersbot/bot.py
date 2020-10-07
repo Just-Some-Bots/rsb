@@ -364,7 +364,7 @@ class SteelersBot(discord.Client):
         em.set_thumbnail(url=thumb_url)
         channel_tags_str = sleeper_resp['channel_tags'][0].upper()
         player_first_last_names = ['{} {} ({})'.format(player['first_name'], player['last_name'], player['position']) for player in players]
-        team_icon = f"https://sleepercdn.com/avatars/nfl_{target_player['team'].lower() if target_player['team'] not in SLEEPER_TEAM_NAME_MAP else SLEEPER_TEAM_NAME_MAP[target_player['team']].lower()}" if target_player["team"] else ""
+        team_icon = f"https://sleepercdn.com/images/team_logos/nfl/{target_player['team'].lower() if target_player['team'] not in SLEEPER_TEAM_NAME_MAP else SLEEPER_TEAM_NAME_MAP[target_player['team']].lower()}" if target_player["team"] else ""
         em.set_author(name=f"{channel_tags_str} | Update for player{'s' if len(players) > 1 else ''}: {', '.join(player_first_last_names)}", url=resp_title_map["data"]["url"], icon_url=team_icon)
         return em
             
